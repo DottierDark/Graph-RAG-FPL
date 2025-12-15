@@ -6,35 +6,37 @@ Handles intent classification, entity extraction, and input embedding
 import re
 from typing import Dict, List, Tuple
 from sentence_transformers import SentenceTransformer
+from config import (
+    INTENT_TYPES, 
+    ENTITY_TYPES, 
+    POSITION_MAPPINGS, 
+    STAT_KEYWORDS,
+    FPL_TEAMS,
+    get_embedding_model
+)
 
 class FPLInputPreprocessor:
     """
-    Handles preprocessing of user queries for FPL assistant
+    Handles preprocessing of user queries for FPL assistant.
+    Uses centralized configuration to ensure consistency across the system.
     """
     
-    def __init__(self, embedding_model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, embedding_model_name: str = None):
         """
-        Initialize preprocessor with embedding model
+        Initialize preprocessor with embedding model.
         
         Args:
-            embedding_model_name: Name of sentence transformer model
+            embedding_model_name: Name of sentence transformer model (defaults to config value)
         """
-        self.embedding_model = SentenceTransformer(embedding_model_name)
+        model_name = embedding_model_name or get_embedding_model()
+        self.embedding_model = SentenceTransformer(model_name)
         
-        # Define intent keywords for rule-based classification
-        self.intent_patterns = {
-            "player_search": ["player", "find player", "show me", "who is", "about"],
-            "player_performance": ["stats", "points", "performance", "how many", "scored", "statistics"],
-            "team_analysis": ["team", "squad", "lineup", "formation"],
-            "recommendation": ["recommend", "suggest", "best", "top", "should i pick", "transfer"],
-            "comparison": ["compare", "vs", "versus", "better", "difference between"],
-            "fixture": ["fixture", "next game", "upcoming", "schedule", "playing against"],
-            "price": ["price", "cost", "value", "budget", "cheap", "expensive"]
-        }
+        # Use centralized intent patterns from config
+        self.intent_patterns = INTENT_TYPES
         
-        # FPL-specific entities
-        self.positions = ["GKP", "DEF", "MID", "FWD", "goalkeeper", "defender", "midfielder", "forward"]
-        self.stat_types = ["goals", "assists", "points", "clean sheets", "bonus", "saves", "minutes"]
+        # Use centralized entity lists from config
+        self.positions = list(POSITION_MAPPINGS.keys())
+        self.stat_types = list(STAT_KEYWORDS.keys())
         
     def classify_intent(self, query: str) -> str:
         """
@@ -63,34 +65,29 @@ class FPLInputPreprocessor:
     
     def extract_entities(self, query: str) -> Dict[str, List[str]]:
         """
-        Extract FPL-specific entities from query
+        Extract FPL-specific entities from query using centralized entity definitions.
         
         Args:
             query: User query string
             
         Returns:
-            Dictionary of extracted entities
+            Dictionary of extracted entities (players, teams, positions, seasons, gameweeks, statistics)
         """
-        entities = {
-            "players": [],
-            "teams": [],
-            "positions": [],
-            "seasons": [],
-            "gameweeks": [],
-            "statistics": []
-        }
+        entities = {entity_type: [] for entity_type in ENTITY_TYPES}
         
         query_lower = query.lower()
         
-        # Extract positions
-        for position in self.positions:
-            if position.lower() in query_lower:
-                entities["positions"].append(position.upper()[:3])  # Normalize to 3-letter code
+        # Extract positions using centralized mappings
+        for position_variant, normalized in POSITION_MAPPINGS.items():
+            if position_variant.lower() in query_lower:
+                if normalized not in entities["positions"]:
+                    entities["positions"].append(normalized)
         
-        # Extract statistics
-        for stat in self.stat_types:
-            if stat in query_lower:
-                entities["statistics"].append(stat)
+        # Extract statistics using centralized keywords
+        for stat_name, stat_variations in STAT_KEYWORDS.items():
+            if any(variant in query_lower for variant in stat_variations):
+                if stat_name not in entities["statistics"]:
+                    entities["statistics"].append(stat_name)
         
         # Extract seasons (e.g., "2023", "2023/24", "season 2023")
         season_pattern = r'20\d{2}(?:/\d{2})?'
@@ -116,15 +113,8 @@ class FPLInputPreprocessor:
         if potential_names:
             entities["players"] = [" ".join(potential_names)]
         
-        # Extract team names (simplified - you'd match against actual FPL teams)
-        fpl_teams = [
-            "Arsenal", "Aston Villa", "Bournemouth", "Brentford", "Brighton",
-            "Chelsea", "Crystal Palace", "Everton", "Fulham", "Liverpool",
-            "Luton", "Man City", "Man Utd", "Newcastle", "Nottm Forest",
-            "Sheffield Utd", "Tottenham", "West Ham", "Wolves", "Burnley"
-        ]
-        
-        for team in fpl_teams:
+        # Extract team names using centralized team list
+        for team in FPL_TEAMS:
             if team.lower() in query_lower:
                 entities["teams"].append(team)
         

@@ -8,16 +8,25 @@ import json
 from typing import Dict, List, Any
 import time
 from huggingface_hub import InferenceClient
+from config import (
+    get_llm_config,
+    PROMPT_TEMPLATE,
+    DEFAULT_PERSONA,
+    ERROR_MESSAGES,
+    RETRY_CONFIG,
+    TIMEOUT_CONFIG
+)
 
 
 class FPLLLMLayer:
     """
-    Handles LLM interaction for generating final responses
+    Handles LLM interaction for generating final responses.
+    Uses centralized configuration for model settings, prompts, and error handling.
     """
     
     def __init__(self, openai_key: str = None, hf_key: str = None):
         """
-        Initialize LLM layer with API keys
+        Initialize LLM layer with API keys.
         
         Args:
             openai_key: OpenAI API key (optional)
@@ -32,9 +41,9 @@ class FPLLLMLayer:
             try:
                 self.hf_client = InferenceClient(token=hf_key)
             except Exception as e:
-                print(f"Warning: Could not initialize HuggingFace client: {e}")
+                print(f"Warning: {ERROR_MESSAGES['hf_init_failed']}: {e}")
         
-        # Available models
+        # Available models mapped to their handler methods
         self.models = {
             "gpt-3.5-turbo": self._call_openai,
             "mistral-7b": self._call_huggingface_inference,
@@ -77,42 +86,30 @@ class FPLLLMLayer:
     
     def create_prompt(self, query: str, context: str, persona: str = None) -> str:
         """
-        Create structured prompt with context, persona, and task
+        Create structured prompt using centralized template from config.
         
         Args:
             query: User query
             context: Formatted KG context
-            persona: LLM persona (optional)
+            persona: LLM persona (defaults to config DEFAULT_PERSONA)
             
         Returns:
-            Complete prompt
+            Complete prompt formatted with template
         """
-        if persona is None:
-            persona = """You are an expert Fantasy Premier League (FPL) assistant. 
-You provide accurate, data-driven advice based on player statistics and performance.
-You only use information from the provided context and never make up statistics."""
+        persona = persona or DEFAULT_PERSONA
         
-        prompt = f"""### PERSONA
-{persona}
-
-### CONTEXT (FPL Knowledge Graph Data)
-{context}
-
-### TASK
-Answer the following user question using ONLY the information provided in the context above.
-If the context doesn't contain enough information to answer the question, say so.
-Be concise and specific, citing relevant statistics from the context.
-
-### USER QUESTION
-{query}
-
-### ANSWER
-"""
+        # Use centralized prompt template from config
+        prompt = PROMPT_TEMPLATE.format(
+            persona=persona,
+            context=context,
+            query=query
+        )
+        
         return prompt
     
     def _call_openai(self, prompt: str, model: str = "gpt-3.5-turbo") -> Dict[str, Any]:
         """
-        Call OpenAI API
+        Call OpenAI API with centralized configuration.
         
         Args:
             prompt: Complete prompt
@@ -123,7 +120,7 @@ Be concise and specific, citing relevant statistics from the context.
         """
         if not self.openai_key:
             return {
-                "answer": "OpenAI API key not configured",
+                "answer": ERROR_MESSAGES['openai_key_missing'],
                 "model": model,
                 "error": True
             }
@@ -134,14 +131,18 @@ Be concise and specific, citing relevant statistics from the context.
             
             start_time = time.time()
             
+            # Get model config from centralized configuration
+            model_config = get_llm_config("openai")
+            
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": "You are an FPL expert assistant."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=500
+                temperature=model_config['temperature'],
+                max_tokens=model_config['max_tokens'],
+                timeout=TIMEOUT_CONFIG['api_call']
             )
             
             end_time = time.time()
@@ -223,7 +224,7 @@ Be concise and specific, citing relevant statistics from the context.
     
     def _call_huggingface_inference(self, prompt: str, model: str = "mistralai/Mistral-7B-Instruct-v0.2") -> Dict[str, Any]:
         """
-        Call HuggingFace Inference API using InferenceClient
+        Call HuggingFace Inference API using InferenceClient with centralized configuration.
         
         Args:
             prompt: Complete prompt
@@ -234,29 +235,32 @@ Be concise and specific, citing relevant statistics from the context.
         """
         if not self.hf_client:
             return {
-                "answer": "HuggingFace client not initialized. Please provide HF_TOKEN.",
+                "answer": ERROR_MESSAGES['hf_key_missing'],
                 "model": model,
                 "error": True
             }
         
-        # Map simple names to full model paths
-        model_map = {
-            "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.2",
-            "gemma-2b": "google/gemma-2-2b-it",
-            "llama-2-7b": "meta-llama/Llama-2-7b-chat-hf"
-        }
+        # Get model config from centralized configuration
+        if model == "mistral-7b":
+            model_config = get_llm_config("mistral")
+        elif model == "gemma-2b":
+            model_config = get_llm_config("gemma")
+        elif model == "llama-2-7b":
+            model_config = get_llm_config("llama")
+        else:
+            model_config = get_llm_config("mistral")  # default
         
-        full_model = model_map.get(model, model)
+        full_model = model_config['model_name']
         
         try:
             start_time = time.time()
             
-            # Use chat completion for instruction-tuned models
+            # Use chat completion for instruction-tuned models with centralized config
             response = self.hf_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],
                 model=full_model,
-                max_tokens=500,
-                temperature=0.3,
+                max_tokens=model_config['max_tokens'],
+                temperature=model_config['temperature'],
             )
             
             end_time = time.time()
@@ -276,7 +280,7 @@ Be concise and specific, citing relevant statistics from the context.
         
         except Exception as e:
             return {
-                "answer": f"Error calling HuggingFace Inference API: {str(e)}",
+                "answer": f"{ERROR_MESSAGES['llm_call_failed']}: {str(e)}",
                 "model": full_model,
                 "error": True
             }

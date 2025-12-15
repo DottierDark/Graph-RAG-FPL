@@ -11,6 +11,12 @@ from dotenv import load_dotenv
 from input_preprocessing import FPLInputPreprocessor
 from graph_retrieval import FPLGraphRetriever
 from llm_layer import FPLLLMLayer
+from config import (
+    get_neo4j_config,
+    ERROR_MESSAGES,
+    EXAMPLE_QUERIES,
+    STREAMLIT_CONFIG
+)
 
 # Load environment variables
 load_dotenv()
@@ -22,22 +28,36 @@ class TokenManager:
     
     @staticmethod
     def load_token(token_name: str) -> Optional[str]:
-        """Load API token from environment variable or config file"""
+        """
+        Load API token from environment variable or config file.
+        
+        Args:
+            token_name: Name of the environment variable
+            
+        Returns:
+            Token string or None if not found
+        """
         # Try environment variable
         token = os.getenv(token_name)
         if token:
             return token
         
-        # Try .env file (already loaded by load_dotenv)
+        # Already loaded by load_dotenv
         return None
     
     @staticmethod
     def get_neo4j_credentials() -> Tuple[str, str, str]:
-        """Get Neo4j connection credentials"""
+        """
+        Get Neo4j connection credentials from centralized config.
+        
+        Returns:
+            Tuple of (uri, username, password)
+        """
+        neo4j_config = get_neo4j_config()
         return (
-            os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-            os.getenv("NEO4J_USERNAME", "neo4j"),
-            os.getenv("NEO4J_PASSWORD", "password")
+            neo4j_config['uri'],
+            neo4j_config['username'],
+            neo4j_config['password']
         )
 
 
@@ -59,7 +79,7 @@ class SessionStateManager:
     
     @staticmethod
     def _initialize_retriever():
-        """Initialize graph retriever with error handling"""
+        """Initialize graph retriever with error handling using centralized config"""
         try:
             uri, username, password = TokenManager.get_neo4j_credentials()
             st.session_state.retriever = FPLGraphRetriever(
@@ -68,7 +88,7 @@ class SessionStateManager:
                 password=password
             )
         except Exception as e:
-            st.error(f"Failed to connect to Neo4j: {str(e)}")
+            st.error(f"{ERROR_MESSAGES['neo4j_connection_failed']}: {str(e)}")
             st.session_state.retriever = None
     
     @staticmethod
@@ -99,23 +119,18 @@ class UIConfigurator:
     
     @staticmethod
     def configure_page():
-        """Configure Streamlit page settings"""
+        """Configure Streamlit page settings using centralized config"""
         st.set_page_config(
-            page_title="FPL Graph-RAG Assistant",
-            page_icon="⚽",
-            layout="wide"
+            page_title=STREAMLIT_CONFIG['page_title'],
+            page_icon=STREAMLIT_CONFIG['page_icon'],
+            layout=STREAMLIT_CONFIG['layout']
         )
     
     @staticmethod
     def display_header():
-        """Display main header"""
-        st.title("⚽ FPL Graph-RAG Assistant")
-        st.markdown("""
-        This assistant uses a Graph-RAG pipeline to answer Fantasy Premier League questions:
-        1. **Input Preprocessing**: Intent classification & entity extraction
-        2. **Graph Retrieval**: Cypher queries + embedding-based search
-        3. **LLM Generation**: Grounded response using multiple LLMs
-        """)
+        """Display main header using centralized config"""
+        st.title(f"{STREAMLIT_CONFIG['page_icon']} {STREAMLIT_CONFIG['page_title']}")
+        st.markdown(STREAMLIT_CONFIG['description'])
 
 
 # ========== Message Display (adapted from app.py) ==========
@@ -198,24 +213,12 @@ retrieval_method = st.sidebar.radio(
     index=2
 )
 
-# Example questions
+# Example questions from centralized config
 st.sidebar.header("📝 Example Questions")
-example_questions = [
-    "Who are the top forwards in 2023?",
-    "Show me Erling Haaland's stats",
-    "Best midfielders under 8 million",
-    "Compare Salah and Son performance",
-    "Arsenal players with most clean sheets",
-    "Top scorers in the league",
-    "Best value defenders",
-    "Players in good form",
-    "Which forwards should I pick?",
-    "Show me Man City players"
-]
 
 selected_example = st.sidebar.selectbox(
     "Or select an example:",
-    [""] + example_questions
+    [""] + EXAMPLE_QUERIES
 )
 
 # Main interface

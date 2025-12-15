@@ -7,183 +7,87 @@ from neo4j import GraphDatabase
 from typing import Dict, List, Any
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from config import (
+    get_neo4j_config,
+    get_embedding_model,
+    RETRIEVAL_LIMITS,
+    CYPHER_QUERY_TEMPLATES,
+    ERROR_MESSAGES
+)
 
 
 class FPLGraphRetriever:
     """
-    Handles retrieval from Neo4j Knowledge Graph using Cypher queries and embeddings
+    Handles retrieval from Neo4j Knowledge Graph using Cypher queries and embeddings.
+    Uses centralized configuration for queries, limits, and connection settings.
     """
     
-    def __init__(self, uri: str, username: str, password: str, embedding_model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, uri: str = None, username: str = None, password: str = None, embedding_model_name: str = None):
         """
-        Initialize graph retriever
+        Initialize graph retriever with optional override parameters.
+        Defaults to centralized config values.
         
         Args:
-            uri: Neo4j connection URI
-            username: Neo4j username
-            password: Neo4j password
-            embedding_model_name: Name of embedding model
+            uri: Neo4j connection URI (defaults to config)
+            username: Neo4j username (defaults to config)
+            password: Neo4j password (defaults to config)
+            embedding_model_name: Name of embedding model (defaults to config)
         """
-        self.driver = GraphDatabase.driver(uri, auth=(username, password))
-        self.embedding_model = SentenceTransformer(embedding_model_name)
+        # Use centralized configuration with optional overrides
+        neo4j_config = get_neo4j_config()
+        self.uri = uri or neo4j_config['uri']
+        self.username = username or neo4j_config['username']
+        self.password = password or neo4j_config['password']
         
-        # Define Cypher query templates (adapted for Milestone 2 schema)
-        self.query_templates = {
-            "player_search": """
-                MATCH (p:Player)
-                WHERE toLower(p.player_name) CONTAINS toLower($player_name)
-                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-                WITH p, collect(DISTINCT pos.name) AS positions
-                RETURN p.player_name AS name, 
-                       positions AS positions,
-                       p.season AS season
-                LIMIT 10
-            """,
-            
-            "top_players_by_position": """
-                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
-                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
-                WHERE f.season = $season
-                WITH p, pos, sum(r.total_points) AS total_points, 
-                     sum(r.goals_scored) AS goals, sum(r.assists) AS assists
-                RETURN p.player_name AS name, 
-                       pos.name AS position,
-                       total_points, goals, assists
-                ORDER BY total_points DESC
-                LIMIT 10
-            """,
-            
-            "player_stats": """
-                MATCH (p:Player {player_name: $player_name})
-                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-                OPTIONAL MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
-                WHERE f.season = $season
-                WITH p, collect(DISTINCT pos.name) AS positions,
-                     sum(r.total_points) AS total_points,
-                     sum(r.goals_scored) AS goals,
-                     sum(r.assists) AS assists,
-                     sum(r.minutes) AS minutes,
-                     sum(r.clean_sheets) AS clean_sheets
-                RETURN p.player_name AS name, 
-                       positions,
-                       p.season AS season,
-                       total_points, goals, assists, minutes, clean_sheets
-            """,
-            
-            "team_players": """
-                MATCH (f:Fixture)-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t:Team {name: $team_name})
-                MATCH (p:Player)-[r:PLAYED_IN]->(f)
-                WHERE f.season = $season
-                WITH p, sum(r.total_points) AS total_points
-                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-                WITH p, total_points, collect(DISTINCT pos.name) AS positions
-                RETURN p.player_name AS name, 
-                       positions,
-                       total_points
-                ORDER BY total_points DESC
-                LIMIT 15
-            """,
-            
-            "players_by_performance": """
-                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
-                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
-                WHERE f.season = $season
-                WITH p, sum(r.total_points) AS total_points,
-                     sum(r.goals_scored) AS goals,
-                     sum(r.assists) AS assists
-                WHERE total_points >= $min_points
-                RETURN p.player_name AS name, 
-                       total_points, goals, assists
-                ORDER BY total_points DESC
-                LIMIT 10
-            """,
-            
-            "player_comparison": """
-                MATCH (p:Player)
-                WHERE p.player_name IN $player_names
-                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
-                WHERE f.season = $season
-                WITH p, sum(r.total_points) AS total_points,
-                     sum(r.goals_scored) AS goals,
-                     sum(r.assists) AS assists,
-                     sum(r.clean_sheets) AS clean_sheets,
-                     sum(r.bonus) AS bonus
-                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-                WITH p, total_points, goals, assists, clean_sheets, bonus,
-                     collect(DISTINCT pos.name) AS positions
-                RETURN p.player_name AS name, 
-                       positions,
-                       total_points, goals, assists, clean_sheets, bonus
-            """,
-            
-            "gameweek_performance": """
-                MATCH (p:Player {player_name: $player_name})-[r:PLAYED_IN]->(f:Fixture)
-                MATCH (f)-[:IN_GAMEWEEK]->(g:Gameweek {gameweek_number: $gameweek})
-                WHERE f.season = $season
-                RETURN p.player_name AS name, 
-                       g.gameweek_number AS gameweek,
-                       r.total_points AS points, 
-                       r.goals_scored AS goals, 
-                       r.assists AS assists,
-                       r.minutes AS minutes
-            """,
-            
-            "top_scorers": """
-                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
-                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
-                WHERE f.season = $season
-                WITH p, sum(r.goals_scored) AS goals,
-                     sum(r.total_points) AS total_points
-                RETURN p.player_name AS name, 
-                       goals, total_points
-                ORDER BY goals DESC
-                LIMIT 10
-            """,
-            
-            "clean_sheet_leaders": """
-                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position)
-                WHERE pos.name IN ['GKP', 'DEF']
-                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
-                WHERE f.season = $season
-                WITH p, pos, sum(r.clean_sheets) AS clean_sheets,
-                     sum(r.total_points) AS total_points
-                RETURN p.player_name AS name, 
-                       pos.name AS position,
-                       clean_sheets, total_points
-                ORDER BY clean_sheets DESC
-                LIMIT 10
-            """,
-            
-            "season_overview": """
-                MATCH (f:Fixture {season: $season})
-                WITH count(DISTINCT f) AS total_fixtures
-                MATCH (g:Gameweek)
-                MATCH (gw_fixture:Fixture {season: $season})-[:IN_GAMEWEEK]->(g)
-                WITH total_fixtures, count(DISTINCT g) AS total_gameweeks
-                MATCH (p:Player {season: $season})
-                RETURN total_fixtures, total_gameweeks, count(p) AS total_players
-            """,
-            
-            "best_performers_gameweek": """
-                MATCH (f:Fixture)-[:IN_GAMEWEEK]->(g:Gameweek {gameweek_number: $gameweek})
-                MATCH (p:Player)-[r:PLAYED_IN]->(f)
-                WHERE f.season = $season
-                RETURN p.player_name AS name,
-                       r.total_points AS points,
-                       r.goals_scored AS goals,
-                       r.assists AS assists
-                ORDER BY r.total_points DESC
-                LIMIT 10
-            """
-        }
+        # Initialize Neo4j driver
+        self.driver = GraphDatabase.driver(self.uri, auth=(self.username, self.password))
+        
+        # Initialize embedding model using config
+        model_name = embedding_model_name or get_embedding_model()
+        self.embedding_model = SentenceTransformer(model_name)
+        
+        # Use centralized query templates from config
+        self.query_templates = CYPHER_QUERY_TEMPLATES
     
     def close(self):
-        """Close Neo4j connection"""
-        self.driver.close()
+        """Close Neo4j connection gracefully"""
+        if self.driver:
+            self.driver.close()
+    
+    def _execute_query_safely(self, query_type: str, params: Dict[str, Any]) -> List[Dict]:
+        """
+        Execute a Cypher query with error handling and centralized limits.
+        Helper method to reduce code duplication across retrieval methods.
+        
+        Args:
+            query_type: Type of query from templates
+            params: Parameters for the query
+            
+        Returns:
+            List of result dictionaries (empty list on error)
+        """
+        if query_type not in self.query_templates:
+            print(f"Warning: {ERROR_MESSAGES['query_not_found']}: {query_type}")
+            return []
+        
+        try:
+            query = self.query_templates[query_type]
+            
+            with self.driver.session() as session:
+                result = session.run(query, params)
+                records = [dict(record) for record in result]
+                
+                # Apply centralized retrieval limits
+                limit = RETRIEVAL_LIMITS.get(query_type, RETRIEVAL_LIMITS['default'])
+                return records[:limit]
+                
+        except Exception as e:
+            print(f"Error executing query: {e}")
+            return []
     
     def execute_query(self, query_type: str, params: Dict[str, Any]) -> List[Dict]:
         """
-        Execute a Cypher query
+        Execute a Cypher query (public interface).
         
         Args:
             query_type: Type of query from templates
@@ -192,25 +96,19 @@ class FPLGraphRetriever:
         Returns:
             List of result dictionaries
         """
-        if query_type not in self.query_templates:
-            return []
-        
-        query = self.query_templates[query_type]
-        
-        with self.driver.session() as session:
-            result = session.run(query, params)
-            return [dict(record) for record in result]
+        return self._execute_query_safely(query_type, params)
     
     def baseline_retrieval(self, intent: str, entities: Dict) -> Dict[str, Any]:
         """
-        Perform baseline retrieval using Cypher queries
+        Perform baseline retrieval using Cypher queries.
+        Routes queries based on intent and entities using centralized query templates.
         
         Args:
             intent: Classified intent
             entities: Extracted entities
             
         Returns:
-            Retrieved information
+            Retrieved information with method, intent, query_type, and data
         """
         results = {
             "method": "baseline",
@@ -221,10 +119,10 @@ class FPLGraphRetriever:
         # Default season
         season = entities.get("seasons", ["2022-23"])[0] if entities.get("seasons") else "2022-23"
         
-        # Route to appropriate query based on intent
+        # Route to appropriate query based on intent using helper method
         if intent == "player_search" and entities.get("players"):
             params = {"player_name": entities["players"][0]}
-            results["data"] = self.execute_query("player_search", params)
+            results["data"] = self._execute_query_safely("player_search", params)
             results["query_type"] = "player_search"
         
         elif intent == "player_performance" and entities.get("players"):
@@ -232,7 +130,7 @@ class FPLGraphRetriever:
                 "player_name": entities["players"][0],
                 "season": season
             }
-            results["data"] = self.execute_query("player_stats", params)
+            results["data"] = self._execute_query_safely("player_stats", params)
             results["query_type"] = "player_stats"
         
         elif intent == "recommendation" and entities.get("positions"):
@@ -241,7 +139,7 @@ class FPLGraphRetriever:
                 "position": position,
                 "season": season
             }
-            results["data"] = self.execute_query("top_players_by_position", params)
+            results["data"] = self._execute_query_safely("top_players_by_position", params)
             results["query_type"] = "top_players_by_position"
         
         elif intent == "comparison" and entities.get("players") and len(entities["players"]) >= 2:
@@ -249,7 +147,7 @@ class FPLGraphRetriever:
                 "player_names": entities["players"][:2],
                 "season": season
             }
-            results["data"] = self.execute_query("player_comparison", params)
+            results["data"] = self._execute_query_safely("player_comparison", params)
             results["query_type"] = "player_comparison"
         
         elif intent == "team_analysis" and entities.get("teams"):
