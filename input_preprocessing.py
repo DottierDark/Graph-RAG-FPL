@@ -89,10 +89,21 @@ class FPLInputPreprocessor:
                 if stat_name not in entities["statistics"]:
                     entities["statistics"].append(stat_name)
         
-        # Extract seasons (e.g., "2023", "2023/24", "season 2023")
-        season_pattern = r'20\d{2}(?:/\d{2})?'
+        # Extract seasons (e.g., "2023", "2023/24", "2022-23", "season 2023")
+        season_pattern = r'20\d{2}(?:[/-]\d{2})?'
         seasons = re.findall(season_pattern, query)
-        entities["seasons"] = seasons if seasons else ["2023"]  # Default to 2023
+        # Normalize season format to match database (e.g., "2022" -> "2022-23")
+        normalized_seasons = []
+        for s in seasons:
+            if '-' not in s and '/' not in s:
+                # Single year like "2022" -> "2022-23"
+                normalized_seasons.append(f"{s}-{str(int(s[-2:]) + 1).zfill(2)}")
+            elif '/' in s:
+                # Convert "2022/23" to "2022-23"
+                normalized_seasons.append(s.replace('/', '-'))
+            else:
+                normalized_seasons.append(s)
+        entities["seasons"] = normalized_seasons if normalized_seasons else ["2022-23"]  # Default to 2022-23
         
         # Extract gameweeks (e.g., "gameweek 10", "GW10", "week 5")
         gameweek_pattern = r'(?:gameweek|gw|week)\s*(\d+)'
@@ -103,10 +114,13 @@ class FPLInputPreprocessor:
         # This is simplified - in production you'd use NER or match against known players
         words = query.split()
         potential_names = []
+        # Common query words to exclude from player names
+        excluded_words = ["what", "which", "show", "find", "get", "the", "who", "are", "is", 
+                         "top", "best", "how", "when", "where", "why", "can", "could", "would"]
         for i, word in enumerate(words):
             if word[0].isupper() and len(word) > 2:
                 # Check if it's not a common word
-                if word.lower() not in ["what", "which", "show", "find", "get", "the"]:
+                if word.lower() not in excluded_words:
                     potential_names.append(word)
         
         # Combine consecutive capitalized words as full names

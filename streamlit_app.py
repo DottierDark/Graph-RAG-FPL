@@ -100,6 +100,24 @@ class SessionStateManager:
         )
     
     @staticmethod
+    def check_embeddings_exist() -> bool:
+        """Check if embeddings are available in the database"""
+        if "embeddings_checked" not in st.session_state:
+            if st.session_state.retriever:
+                try:
+                    # Quick check without warnings
+                    test_result = st.session_state.retriever.embedding_retrieval([0.0]*384, top_k=1)
+                    st.session_state.embeddings_exist = len(test_result.get('data', [])) > 0
+                    st.session_state.embeddings_checked = True
+                except Exception:
+                    st.session_state.embeddings_exist = False
+                    st.session_state.embeddings_checked = True
+            else:
+                st.session_state.embeddings_exist = False
+                st.session_state.embeddings_checked = True
+        return st.session_state.get('embeddings_exist', False)
+    
+    @staticmethod
     def add_message(role: str, content: str, metadata: Dict[str, Any] = None):
         """Add message to chat history"""
         message = {"role": role, "content": content}
@@ -158,6 +176,70 @@ class MessageDisplayer:
         st.warning(f"⚠️ {message}")
 
 
+# ========== Query Processor (SOLID: Single Responsibility) ==========
+class QueryProcessor:
+    """Responsible for processing FPL queries through the RAG pipeline"""
+    
+    @staticmethod
+    def process_query(query: str, preprocessor, retriever, llm_layer, retrieval_method: str, selected_model: str) -> dict:
+        """Process query through complete pipeline with progress tracking"""
+        results = {
+            "success": False,
+            "answer": None,
+            "metadata": {},
+            "error": None
+        }
+        
+        try:
+            # Step 1: Preprocessing
+            preprocessed = preprocessor.preprocess(query)
+            results["metadata"]["intent"] = preprocessed['intent']
+            results["metadata"]["entities"] = preprocessed['entities']
+            
+            # Step 2: Retrieval
+            baseline_results = None
+            embedding_results = None
+            
+            if retrieval_method in ["Baseline (Cypher)", "Hybrid (Both)"]:
+                baseline_results = retriever.baseline_retrieval(
+                    preprocessed['intent'],
+                    preprocessed['entities']
+                )
+                results["metadata"]["query_type"] = baseline_results.get('query_type', 'N/A')
+                results["metadata"]["results_count"] = len(baseline_results.get('data', []))
+            
+            if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
+                embedding_results = retriever.embedding_retrieval(
+                    preprocessed['embedding'],
+                    top_k=5
+                )
+                results["metadata"]["semantic_matches"] = len(embedding_results.get('data', []))
+            
+            # Step 3: LLM Generation
+            response = llm_layer.generate_response(
+                query=query,
+                baseline_results=baseline_results or {},
+                embedding_results=embedding_results,
+                model_name=selected_model
+            )
+            
+            results["success"] = not response.get('error', False)
+            results["answer"] = response.get('answer')
+            results["metadata"]["model"] = response.get('model', selected_model)
+            results["metadata"]["response_time"] = response.get('response_time', 0)
+            results["metadata"]["retrieval_method"] = retrieval_method
+            results["metadata"]["baseline_data"] = baseline_results.get('data', [])[:3] if baseline_results else []
+            results["metadata"]["embedding_data"] = embedding_results.get('data', [])[:3] if embedding_results and embedding_results.get('data') else []
+            
+        except Exception as e:
+            results["error"] = str(e)
+        
+        return results
+
+
+# ========== Message Display (SOLID: Single Responsibility) ==========
+
+
 # Page configuration
 UIConfigurator.configure_page()
 
@@ -167,8 +249,110 @@ SessionStateManager.initialize()
 # Display header
 UIConfigurator.display_header()
 
+# Add custom CSS for better styling
+st.markdown("""
+<style>
+    .stChatMessage {
+        background-color: #f0f2f6;
+        border-radius: 10px;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .stExpander {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.2rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Welcome message if no history
+if not st.session_state.messages:
+    st.info("""
+    👋 **Welcome to the FPL Graph-RAG Assistant!**
+    
+    Ask me anything about Fantasy Premier League:
+    - 🎯 "Who are the top forwards in 2022-23?"
+    - 📊 "Show me Erling Haaland's stats"
+    - 🔍 "Best midfielders under 8 million"
+    - ⚖️ "Compare Salah and Son performance"
+    
+    Select an example from the sidebar or type your own question below!
+    """)
+
+# Handle embedding creation UI
+if st.session_state.get('show_embedding_creator', False):
+    with st.container():
+        st.warning("### 🔄 Create Embeddings for Enhanced Search")
+        st.markdown("""
+        Embeddings enable **semantic search** and **hybrid retrieval** for better results.
+        This process will:
+        - Analyze all players in the database
+        - Generate semantic embeddings (takes ~1-2 minutes)
+        - Store embeddings in Neo4j for future queries
+        """)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Start Creation", type="primary", use_container_width=True):
+                st.session_state.start_embedding_creation = True
+        with col2:
+            if st.button("❌ Cancel", use_container_width=True):
+                st.session_state.show_embedding_creator = False
+                st.rerun()
+
+# Execute embedding creation
+if st.session_state.get('start_embedding_creation', False):
+    st.session_state.start_embedding_creation = False
+    st.session_state.show_embedding_creator = False
+    
+    progress_container = st.container()
+    with progress_container:
+        status = st.status("Creating embeddings...", expanded=True)
+        
+        with status:
+            st.write("🔍 Step 1: Connecting to Neo4j...")
+            st.write("✓ Connected successfully")
+            
+            st.write("📊 Step 2: Analyzing players...")
+            
+            try:
+                # Create embeddings with progress tracking
+                count = st.session_state.retriever.create_node_embeddings()
+                
+                st.write(f"✓ Created embeddings for {count} players")
+                st.write("💾 Step 3: Saving to database...")
+                st.write("✓ Embeddings saved successfully")
+                
+                status.update(label="✅ Embeddings created successfully!", state="complete")
+                
+                # Reset embedding check
+                st.session_state.embeddings_checked = False
+                st.session_state.embeddings_exist = True
+                
+                st.success("🎉 Embeddings are now available! You can use Embedding-based or Hybrid retrieval.")
+                st.balloons()
+                
+            except Exception as e:
+                status.update(label="❌ Error creating embeddings", state="error")
+                st.error(f"Error: {str(e)}")
+                st.info("💡 Tip: Make sure Neo4j is running and contains player data.")
+    
+    # Rerun to update UI
+    st.rerun()
+
 # Sidebar - Configuration
 st.sidebar.header("⚙️ Configuration")
+
+# Clear chat button
+if st.sidebar.button("🗑️ Clear Chat History", use_container_width=True):
+    SessionStateManager.clear_messages()
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 # API Status
 with st.sidebar.expander("🔑 API Status", expanded=False):
@@ -207,11 +391,23 @@ embedding_model = st.sidebar.selectbox(
 )
 
 # Retrieval method
+embeddings_available = SessionStateManager.check_embeddings_exist()
+
 retrieval_method = st.sidebar.radio(
     "Retrieval Method",
     ["Baseline (Cypher)", "Embedding-based", "Hybrid (Both)"],
-    index=2
+    index=0,  # Default to Baseline (fastest and no embeddings needed)
+    help="Baseline uses direct Cypher queries. Embedding/Hybrid require embeddings to be created first."
 )
+
+# Show embedding status
+if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
+    if embeddings_available:
+        st.sidebar.success("✅ Embeddings available")
+    else:
+        st.sidebar.warning("⚠️ Embeddings not found")
+        if st.sidebar.button("🔄 Create Embeddings Now", use_container_width=True):
+            st.session_state.show_embedding_creator = True
 
 # Example questions from centralized config
 st.sidebar.header("📝 Example Questions")
@@ -221,127 +417,133 @@ selected_example = st.sidebar.selectbox(
     [""] + EXAMPLE_QUERIES
 )
 
-# Main interface
-st.header("💬 Ask Your FPL Question")
+# Session stats
+st.sidebar.markdown("---")
+st.sidebar.header("📈 Session Stats")
+total_queries = len([msg for msg in st.session_state.messages if msg["role"] == "user"])
+st.sidebar.metric("Total Queries", total_queries)
+if st.session_state.messages:
+    last_model = st.session_state.messages[-1].get("metadata", {}).get("model", "N/A") if st.session_state.messages[-1]["role"] == "assistant" else "N/A"
+    st.sidebar.metric("Last Model Used", last_model)
 
-# Query input
-query = st.text_input(
-    "Enter your question:",
-    value=selected_example if selected_example else "",
-    placeholder="e.g., Who are the top forwards in 2023?"
-)
+# Main interface
+st.header("💬 Chat with Your FPL Assistant")
+
+# Display chat history
+chat_container = st.container()
+with chat_container:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            
+            # Show metadata if available
+            if "metadata" in message and message["role"] == "assistant":
+                with st.expander("📊 View Details"):
+                    metadata = message["metadata"]
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Intent", metadata.get("intent", "N/A"))
+                        st.metric("Query Type", metadata.get("query_type", "N/A"))
+                    with col2:
+                        st.metric("Results Found", metadata.get("results_count", 0))
+                        st.metric("Model Used", metadata.get("model", "N/A"))
+                    with col3:
+                        if "response_time" in metadata:
+                            st.metric("Response Time", f"{metadata['response_time']:.2f}s")
+                        st.metric("Retrieval Method", metadata.get("retrieval_method", "N/A"))
+
+# Query input using chat_input
+query = st.chat_input("Ask about FPL players, stats, or get recommendations...")
+
+# Alternative: select from examples
+if not query and selected_example:
+    query = selected_example
 
 # Process button
-if st.button("🔍 Get Answer", type="primary"):
-    if not query:
-        MessageDisplayer.show_warning("Please enter a question!")
-    elif not st.session_state.retriever:
-        MessageDisplayer.show_error("Neo4j connection not available. Please check your configuration.")
+if query:
+    # Add user message to chat
+    with st.chat_message("user"):
+        st.markdown(query)
+    
+    SessionStateManager.add_message("user", query)
+    
+    if not st.session_state.retriever:
+        with st.chat_message("assistant"):
+            st.error("Neo4j connection not available. Please check your configuration.")
     else:
-        with st.spinner("Processing your question..."):
+        # Show assistant response with clean status tracking
+        with st.chat_message("assistant"):
+            # Create status container with progress
+            status_container = st.status("Processing your question...", expanded=True)
+            
             try:
-                # Create columns for the pipeline visualization
-                col1, col2, col3 = st.columns(3)
-                
-                # Step 1: Input Preprocessing
-                with col1:
-                    st.subheader("1️⃣ Input Preprocessing")
-                    preprocessed = st.session_state.preprocessor.preprocess(query)
+                with status_container:
+                    st.write("🔍 **Analyzing your question...**")
                     
-                    st.write("**Intent:**", preprocessed['intent'])
-                    st.write("**Entities:**")
-                    for entity_type, values in preprocessed['entities'].items():
-                        if values:
-                            st.write(f"- {entity_type}: {', '.join(map(str, values))}")
-                    st.write(f"**Embedding Dimension:** {len(preprocessed['embedding'])}")
+                # Process query using QueryProcessor
+                results = QueryProcessor.process_query(
+                    query=query,
+                    preprocessor=st.session_state.preprocessor,
+                    retriever=st.session_state.retriever,
+                    llm_layer=st.session_state.llm_layer,
+                    retrieval_method=retrieval_method,
+                    selected_model=selected_model
+                )
                 
-                # Step 2: Graph Retrieval
-                with col2:
-                    st.subheader("2️⃣ Graph Retrieval")
-                    
-                    baseline_results = None
-                    embedding_results = None
+                with status_container:
+                    st.write(f"✓ Intent: `{results['metadata'].get('intent', 'N/A')}`")
                     
                     if retrieval_method in ["Baseline (Cypher)", "Hybrid (Both)"]:
-                        baseline_results = st.session_state.retriever.baseline_retrieval(
-                            preprocessed['intent'],
-                            preprocessed['entities']
-                        )
-                        st.write(f"**Cypher Query Type:** {baseline_results.get('query_type', 'N/A')}")
-                        st.write(f"**Results Found:** {len(baseline_results.get('data', []))}")
+                        st.write(f"✓ Found {results['metadata'].get('results_count', 0)} results via Cypher")
                     
                     if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
-                        embedding_results = st.session_state.retriever.embedding_retrieval(
-                            preprocessed['embedding'],
-                            top_k=5
-                        )
-                        st.write(f"**Semantic Matches:** {len(embedding_results.get('data', []))}")
-                
-                # Step 3: LLM Generation
-                with col3:
-                    st.subheader("3️⃣ LLM Generation")
+                        semantic_count = results['metadata'].get('semantic_matches', 0)
+                        if semantic_count > 0:
+                            st.write(f"✓ Found {semantic_count} semantic matches")
+                        else:
+                            st.write("⚠️ No embeddings found (using baseline only)")
                     
-                    response = st.session_state.llm_layer.generate_response(
-                        query=query,
-                        baseline_results=baseline_results or {},
-                        embedding_results=embedding_results,
-                        model_name=selected_model
-                    )
+                    st.write(f"✓ Generated response with {results['metadata'].get('model', 'N/A')}")
+                
+                status_container.update(label="✅ Complete!", state="complete", expanded=False)
+                
+                # Display the answer
+                if results["success"] and results["answer"]:
+                    st.markdown(results["answer"])
                     
-                    st.write(f"**Model:** {response['model']}")
-                    if 'response_time' in response:
-                        st.write(f"**Response Time:** {response['response_time']:.2f}s")
-                    if response.get('error'):
-                        MessageDisplayer.show_error("Error generating response")
-                
-                # Display results in expandable sections
-                st.markdown("---")
-                st.header("📊 Results")
-                
-                # Final Answer
-                st.subheader("✅ Final Answer")
-                if response.get('answer'):
-                    st.success(response['answer'])
-                else:
-                    MessageDisplayer.show_warning("No answer generated")
-                
-                # Knowledge Graph Context
-                with st.expander("🔍 View Knowledge Graph Context"):
-                    st.markdown("### Retrieved Information from Neo4j")
+                    # Add to chat history
+                    SessionStateManager.add_message("assistant", results["answer"], results["metadata"])
                     
-                    if baseline_results and baseline_results.get('data'):
-                        st.markdown("#### Cypher Query Results")
-                        st.json(baseline_results['data'][:5])
-                    
-                    if embedding_results and embedding_results.get('data'):
-                        st.markdown("#### Embedding-Based Results")
-                        st.json(embedding_results['data'][:5])
-                
-                # Full Prompt
-                with st.expander("📝 View Full Prompt"):
-                    st.code(response.get('prompt', 'N/A'), language="text")
-                
-                # Model Comparison (optional)
-                if st.checkbox("🔬 Compare Multiple Models"):
-                    with st.spinner("Comparing models..."):
-                        comparisons = st.session_state.llm_layer.compare_models(
-                            query,
-                            baseline_results or {},
-                            embedding_results,
-                            models=["gpt-3.5-turbo", "mistral-7b", "rule-based-fallback"]
-                        )
+                    # Show detailed view in expander
+                    with st.expander("📊 View Retrieved Data"):
+                        col1, col2 = st.columns(2)
                         
-                        for model_name, model_response in comparisons.items():
-                            st.markdown(f"### {model_name}")
-                            st.write(model_response.get('answer', 'N/A'))
-                            if 'response_time' in model_response:
-                                st.caption(f"Response time: {model_response['response_time']:.2f}s")
-                            st.markdown("---")
-            
+                        with col1:
+                            st.metric("Query Type", results['metadata'].get('query_type', 'N/A'))
+                            st.metric("Results Found", results['metadata'].get('results_count', 0))
+                        
+                        with col2:
+                            st.metric("Response Time", f"{results['metadata'].get('response_time', 0):.2f}s")
+                            st.metric("Model", results['metadata'].get('model', 'N/A'))
+                        
+                        if results['metadata'].get('baseline_data'):
+                            st.markdown("**🔍 Cypher Query Results:**")
+                            st.json(results['metadata']['baseline_data'])
+                        
+                        if results['metadata'].get('embedding_data'):
+                            st.markdown("**🧠 Semantic Search Results:**")
+                            st.json(results['metadata']['embedding_data'])
+                else:
+                    error_msg = results.get("error") or "Unable to generate response."
+                    st.error(error_msg)
+                    SessionStateManager.add_message("assistant", f"❌ {error_msg}")
+                
             except Exception as e:
-                MessageDisplayer.show_error(f"Error processing query: {str(e)}")
-                import traceback
-                st.code(traceback.format_exc())
+                status_container.update(label="❌ Error", state="error", expanded=True)
+                error_msg = f"An error occurred: {str(e)}"
+                st.error(error_msg)
+                SessionStateManager.add_message("assistant", error_msg)
 
 # Footer
 st.markdown("---")

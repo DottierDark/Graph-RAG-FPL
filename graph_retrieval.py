@@ -116,8 +116,9 @@ class FPLGraphRetriever:
             "data": []
         }
         
-        # Default season
-        season = entities.get("seasons", ["2022-23"])[0] if entities.get("seasons") else "2022-23"
+        # Default season - ensure it's in correct format (YYYY-YY)
+        seasons = entities.get("seasons", ["2022-23"])
+        season = seasons[0] if seasons else "2022-23"
         
         # Route to appropriate query based on intent using helper method
         if intent == "player_search" and entities.get("players"):
@@ -235,18 +236,42 @@ class FPLGraphRetriever:
     
     def embedding_retrieval(self, query_embedding: List[float], top_k: int = 10) -> Dict[str, Any]:
         """
-        Perform embedding-based retrieval using vector similarity
+        Perform embedding-based retrieval using vector similarity.
+        Note: Requires embeddings to be created first via create_node_embeddings().
         
         Args:
             query_embedding: Query embedding vector
             top_k: Number of results to return
             
         Returns:
-            Retrieved information
+            Retrieved information with similarity scores
         """
-        # Note: This requires vector index in Neo4j
-        # For now, we'll do a simple similarity calculation
+        # Check if embeddings exist before querying
+        check_query = """
+            MATCH (p:Player)
+            WHERE p.embedding IS NOT NULL
+            RETURN count(p) AS count
+            LIMIT 1
+        """
         
+        try:
+            with self.driver.session() as session:
+                result = session.run(check_query)
+                count = result.single()
+                if not count or count['count'] == 0:
+                    return {
+                        "method": "embedding",
+                        "data": [],
+                        "message": "No player embeddings found. Embeddings need to be created first. Use baseline retrieval only."
+                    }
+        except Exception:
+            return {
+                "method": "embedding",
+                "data": [],
+                "message": "Embedding retrieval not available. Using baseline retrieval only."
+            }
+        
+        # Query for players with embeddings
         query = """
             MATCH (p:Player)
             WHERE p.embedding IS NOT NULL AND p.season = '2022-23'
@@ -256,9 +281,16 @@ class FPLGraphRetriever:
             LIMIT 200
         """
         
-        with self.driver.session() as session:
-            result = session.run(query)
-            players = [dict(record) for record in result]
+        try:
+            with self.driver.session() as session:
+                result = session.run(query)
+                players = [dict(record) for record in result]
+        except Exception as e:
+            return {
+                "method": "embedding",
+                "data": [],
+                "message": f"Error retrieving embeddings: {str(e)}"
+            }
         
         if not players:
             return {
