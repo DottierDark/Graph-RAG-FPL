@@ -91,11 +91,10 @@ CYPHER_QUERY_TEMPLATES = {
         OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
         WITH p, collect(DISTINCT pos.name) AS positions
         RETURN p.player_name AS name, 
-               positions AS positions,
-               p.season AS season
+            positions AS positions,
+            p.season AS season
         LIMIT 10
     """,
-    
     "top_players_by_position": """
         MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
         MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
@@ -108,7 +107,6 @@ CYPHER_QUERY_TEMPLATES = {
         ORDER BY total_points DESC
         LIMIT 10
     """,
-    
     "player_stats": """
         MATCH (p:Player {player_name: $player_name})
         OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
@@ -125,7 +123,6 @@ CYPHER_QUERY_TEMPLATES = {
                p.season AS season,
                total_points, goals, assists, minutes, clean_sheets
     """,
-    
     "team_players": """
         MATCH (f:Fixture)-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t:Team {name: $team_name})
         MATCH (p:Player)-[r:PLAYED_IN]->(f)
@@ -139,7 +136,6 @@ CYPHER_QUERY_TEMPLATES = {
         ORDER BY total_points DESC
         LIMIT 15
     """,
-    
     "player_comparison": """
         MATCH (p:Player)
         WHERE p.player_name IN $player_names
@@ -157,7 +153,6 @@ CYPHER_QUERY_TEMPLATES = {
                positions,
                total_points, goals, assists, clean_sheets, bonus
     """,
-    
     "gameweek_performance": """
         MATCH (p:Player {player_name: $player_name})-[r:PLAYED_IN]->(f:Fixture)
         MATCH (f)-[:IN_GAMEWEEK]->(g:Gameweek {gameweek_number: $gameweek})
@@ -169,7 +164,6 @@ CYPHER_QUERY_TEMPLATES = {
                r.assists AS assists,
                r.minutes AS minutes
     """,
-    
     "top_scorers": """
         MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
         MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
@@ -181,7 +175,6 @@ CYPHER_QUERY_TEMPLATES = {
         ORDER BY goals DESC
         LIMIT 10
     """,
-    
     "clean_sheet_leaders": """
         MATCH (p:Player)-[:PLAYS_AS]->(pos:Position)
         WHERE pos.name IN ['GKP', 'DEF']
@@ -194,7 +187,65 @@ CYPHER_QUERY_TEMPLATES = {
                clean_sheets, total_points
         ORDER BY clean_sheets DESC
         LIMIT 10
-    """
+    """,
+    "players_by_price": """
+        MATCH (p:Player)
+        MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+        WHERE f.season = $season AND p.now_cost <= $max_price
+        WITH p, sum(r.total_points) AS total_points
+        OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+        WITH p, total_points, collect(DISTINCT pos.name) AS positions
+        WHERE p.now_cost > 0
+        RETURN p.player_name AS name, 
+               positions,
+               p.now_cost AS price,
+               total_points,
+               (toFloat(total_points) / p.now_cost) AS value
+        ORDER BY total_points DESC
+        LIMIT 10
+    """,
+    "form_players": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
+        WHERE f.season = $season
+        WITH p, f, r
+        ORDER BY f.event DESC
+        LIMIT 5
+        WITH p, avg(r.total_points) AS recent_form
+        OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+        WITH p, recent_form, collect(DISTINCT pos.name) AS positions
+        RETURN p.player_name AS name,
+               positions,
+               recent_form
+        ORDER BY recent_form DESC
+        LIMIT 10
+    """,
+    "fixtures": """
+        MATCH (f:Fixture)
+        WHERE f.season = $season AND f.event = $gameweek
+        MATCH (f)-[:HAS_HOME_TEAM]->(home:Team)
+        MATCH (f)-[:HAS_AWAY_TEAM]->(away:Team)
+        RETURN f.event AS gameweek,
+               home.name AS home_team,
+               away.name AS away_team,
+               f.team_h_score AS home_score,
+               f.team_a_score AS away_score,
+               f.kickoff_time AS kickoff
+        ORDER BY f.kickoff_time
+    """,
+    "best_performers_gameweek": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
+        MATCH (f)-[:IN_GAMEWEEK]->(g:Gameweek {gameweek_number: $gameweek})
+        WHERE f.season = $season
+        OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+        WITH p, r, collect(DISTINCT pos.name) AS positions
+        RETURN p.player_name AS name,
+               positions,
+               r.total_points AS points,
+               r.goals_scored AS goals,
+               r.assists AS assists
+        ORDER BY r.total_points DESC
+        LIMIT 10
+    """,
 }
 
 
@@ -213,12 +264,12 @@ INTENT_TYPES = {
 
 # Entity types to extract from queries
 ENTITY_TYPES = [
-    "players",      # Player names
-    "teams",        # Team names
-    "positions",    # FWD, MID, DEF, GKP
-    "seasons",      # 2021-22, 2022-23, etc.
-    "gameweeks",    # GW1, GW38, etc.
-    "stats"         # goals, assists, clean_sheets, etc.
+    "players",  # Player names
+    "teams",  # Team names
+    "positions",  # FWD, MID, DEF, GKP
+    "seasons",  # 2021-22, 2022-23, etc.
+    "gameweeks",  # GW1, GW38, etc.
+    "statistics",  # goals, assists, clean_sheets, etc.
 ]
 
 # Position mappings - handle various forms
