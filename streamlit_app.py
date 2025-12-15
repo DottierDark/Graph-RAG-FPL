@@ -79,17 +79,24 @@ class SessionStateManager:
     
     @staticmethod
     def _initialize_retriever():
-        """Initialize graph retriever with error handling using centralized config"""
+        """Initialize graph retriever with FAISS vector store using centralized config"""
         try:
             uri, username, password = TokenManager.get_neo4j_credentials()
+            
+            # Initialize retriever with integrated FAISS vector store
             st.session_state.retriever = FPLGraphRetriever(
                 uri=uri,
                 username=username,
                 password=password
             )
+            
+            # Check if embeddings are already loaded from cache
+            st.session_state.embeddings_loaded = st.session_state.retriever.is_embeddings_ready()
+            
         except Exception as e:
             st.error(f"{ERROR_MESSAGES['neo4j_connection_failed']}: {str(e)}")
             st.session_state.retriever = None
+            st.session_state.embeddings_loaded = False
     
     @staticmethod
     def _initialize_llm():
@@ -101,20 +108,12 @@ class SessionStateManager:
     
     @staticmethod
     def check_embeddings_exist() -> bool:
-        """Check if embeddings are available in the database"""
+        """Check if embeddings are available in vector cache"""
         if "embeddings_checked" not in st.session_state:
-            if st.session_state.retriever:
-                try:
-                    # Quick check without warnings
-                    test_result = st.session_state.retriever.embedding_retrieval([0.0]*384, top_k=1)
-                    st.session_state.embeddings_exist = len(test_result.get('data', [])) > 0
-                    st.session_state.embeddings_checked = True
-                except Exception:
-                    st.session_state.embeddings_exist = False
-                    st.session_state.embeddings_checked = True
-            else:
-                st.session_state.embeddings_exist = False
-                st.session_state.embeddings_checked = True
+            # Check if vector cache exists
+            embeddings_loaded = st.session_state.get('embeddings_loaded', False)
+            st.session_state.embeddings_exist = embeddings_loaded
+            st.session_state.embeddings_checked = True
         return st.session_state.get('embeddings_exist', False)
     
     @staticmethod
@@ -209,6 +208,7 @@ class QueryProcessor:
                 results["metadata"]["results_count"] = len(baseline_results.get('data', []))
             
             if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
+                # Use integrated FAISS-based embedding retrieval
                 embedding_results = retriever.embedding_retrieval(
                     preprocessed['embedding'],
                     top_k=5
@@ -252,19 +252,31 @@ UIConfigurator.display_header()
 # Add custom CSS for better styling
 st.markdown("""
 <style>
+    /* Chat messages - Adapt to Light/Dark mode automatically */
     .stChatMessage {
-        background-color: #f0f2f6;
+        background-color: var(--secondary-background-color);
+        border: 1px solid rgba(128, 128, 128, 0.1);
         border-radius: 10px;
         padding: 10px;
         margin: 5px 0;
     }
+    
+    /* Expanders - Remove hardcoded white background */
     .stExpander {
-        background-color: #ffffff;
-        border: 1px solid #e0e0e0;
+        background-color: transparent;
+        border: 1px solid rgba(128, 128, 128, 0.2);
         border-radius: 5px;
     }
+    
+    /* Metrics styling */
     div[data-testid="stMetricValue"] {
         font-size: 1.2rem;
+        color: var(--primary-color);
+    }
+    
+    /* Status container styling */
+    div[data-testid="stStatusWidget"] {
+        background-color: var(--secondary-background-color);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -290,9 +302,9 @@ if st.session_state.get('show_embedding_creator', False):
         st.markdown("""
         Embeddings enable **semantic search** and **hybrid retrieval** for better results.
         This process will:
-        - Analyze all players in the database
-        - Generate semantic embeddings (takes ~1-2 minutes)
-        - Store embeddings in Neo4j for future queries
+        - Load player data from Neo4j (read-only)
+        - Generate semantic embeddings using FAISS (takes ~1-2 minutes)
+        - Cache embeddings locally in `vector_cache/` for fast future access
         """)
         
         col1, col2 = st.columns(2)
@@ -317,21 +329,27 @@ if st.session_state.get('start_embedding_creation', False):
             st.write("🔍 Step 1: Connecting to Neo4j...")
             st.write("✓ Connected successfully")
             
-            st.write("📊 Step 2: Analyzing players...")
+            st.write("📊 Step 2: Loading players from Neo4j...")
             
             try:
-                # Create embeddings with progress tracking
-                count = st.session_state.retriever.create_node_embeddings()
+                retriever = st.session_state.get('retriever')
+                if not retriever:
+                    raise Exception("Retriever not initialized")
                 
-                st.write(f"✓ Created embeddings for {count} players")
-                st.write("💾 Step 3: Saving to database...")
-                st.write("✓ Embeddings saved successfully")
+                # Build index with integrated FAISS vector store
+                player_count = retriever.create_node_embeddings()
+                
+                st.write(f"✓ Loaded {player_count} players")
+                st.write("🔢 Step 3: Generated embeddings with FAISS")
+                st.write("💾 Step 4: Cached to vector_cache/ directory")
+                st.write("✓ Embeddings ready for semantic search")
                 
                 status.update(label="✅ Embeddings created successfully!", state="complete")
                 
                 # Reset embedding check
                 st.session_state.embeddings_checked = False
                 st.session_state.embeddings_exist = True
+                st.session_state.embeddings_loaded = True
                 
                 st.success("🎉 Embeddings are now available! You can use Embedding-based or Hybrid retrieval.")
                 st.balloons()

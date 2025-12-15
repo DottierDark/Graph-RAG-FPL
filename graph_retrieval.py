@@ -4,9 +4,12 @@ Handles both baseline Cypher queries and embedding-based retrieval
 """
 
 from neo4j import GraphDatabase
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
+import faiss
+import pickle
+from pathlib import Path
 from config import (
     get_neo4j_config,
     get_embedding_model,
@@ -48,6 +51,16 @@ class FPLGraphRetriever:
         
         # Use centralized query templates from config
         self.query_templates = CYPHER_QUERY_TEMPLATES
+        
+        # FAISS vector store for embeddings (separate from Neo4j)
+        self.dimension = 384  # all-MiniLM-L6-v2 dimension
+        self.index = None
+        self.player_metadata = []
+        self.cache_dir = Path("vector_cache")
+        self.cache_dir.mkdir(exist_ok=True)
+        
+        # Try to load cached embeddings
+        self._load_vector_cache()
     
     def close(self):
         """Close Neo4j connection gracefully"""
@@ -181,9 +194,10 @@ class FPLGraphRetriever:
     
     def create_node_embeddings(self):
         """
-        Create embeddings for all Player nodes
-        This should be run once during setup
+        Create embeddings for all Player nodes using FAISS vector store.
+        Loads data from Neo4j (read-only), creates embeddings, caches locally.
         """
+        # Load player data from Neo4j
         query = """
             MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
             WHERE f.season = '2022-23'
@@ -206,149 +220,126 @@ class FPLGraphRetriever:
             result = session.run(query)
             players = [dict(record) for record in result]
         
-        # Create text representation for each player
-        embeddings_created = 0
+        if not players:
+            print("No players found in Neo4j")
+            return 0
+        
+        # Create text representations and embeddings
+        texts = []
+        self.player_metadata = []
+        
         for player in players:
             positions_str = ', '.join(player.get('positions', ['Unknown']))
             text = f"Player: {player['name']}, Position: {positions_str}, " \
                    f"Season: {player.get('season', '2022-23')}, " \
                    f"Points: {player.get('total_points', 0)}, " \
                    f"Goals: {player.get('goals', 0)}, Assists: {player.get('assists', 0)}"
-            
-            embedding = self.embedding_model.encode(text).tolist()
-            
-            # Store embedding in Neo4j
-            update_query = """
-                MATCH (p:Player {player_name: $name, season: $season})
-                SET p.embedding = $embedding
-            """
-            
-            with self.driver.session() as session:
-                session.run(update_query, {
-                    "name": player['name'], 
-                    "season": player.get('season', '2022-23'),
-                    "embedding": embedding
-                })
-                embeddings_created += 1
+            texts.append(text)
+            self.player_metadata.append(player)
         
-        print(f"Created embeddings for {embeddings_created} players")
-        return embeddings_created
+        # Generate embeddings in batch
+        embeddings = self.embedding_model.encode(texts, show_progress_bar=True)
+        embeddings_np = np.array(embeddings).astype('float32')
+        
+        # Build FAISS index
+        self.index = faiss.IndexFlatL2(self.dimension)
+        self.index.add(embeddings_np)
+        
+        # Save to cache
+        self._save_vector_cache()
+        
+        print(f"Created embeddings for {len(players)} players and cached to {self.cache_dir}")
+        return len(players)
     
     def embedding_retrieval(self, query_embedding: List[float], top_k: int = 10) -> Dict[str, Any]:
         """
-        Perform embedding-based retrieval using vector similarity.
-        Note: Requires embeddings to be created first via create_node_embeddings().
+        Perform embedding-based retrieval using FAISS vector similarity.
         
         Args:
-            query_embedding: Query embedding vector
+            query_embedding: Query embedding vector or query string
             top_k: Number of results to return
             
         Returns:
             Retrieved information with similarity scores
         """
-        # Check if embeddings exist before querying
-        check_query = """
-            MATCH (p:Player)
-            WHERE p.embedding IS NOT NULL
-            RETURN count(p) AS count
-            LIMIT 1
-        """
-        
-        try:
-            with self.driver.session() as session:
-                result = session.run(check_query)
-                count = result.single()
-                if not count or count['count'] == 0:
-                    return {
-                        "method": "embedding",
-                        "data": [],
-                        "message": "No player embeddings found. Embeddings need to be created first. Use baseline retrieval only."
-                    }
-        except Exception:
+        if self.index is None or len(self.player_metadata) == 0:
             return {
                 "method": "embedding",
                 "data": [],
-                "message": "Embedding retrieval not available. Using baseline retrieval only."
+                "message": "No embeddings available. Run create_node_embeddings() first."
             }
         
-        # Query for players with embeddings
-        query = """
-            MATCH (p:Player)
-            WHERE p.embedding IS NOT NULL AND p.season = '2022-23'
-            RETURN p.player_name AS name, 
-                   p.season AS season,
-                   p.embedding AS embedding
-            LIMIT 200
-        """
+        # Convert query to embedding if it's a string
+        if isinstance(query_embedding, str):
+            query_emb = self.embedding_model.encode([query_embedding]).astype('float32')
+        else:
+            query_emb = np.array([query_embedding]).astype('float32')
         
-        try:
-            with self.driver.session() as session:
-                result = session.run(query)
-                players = [dict(record) for record in result]
-        except Exception as e:
-            return {
-                "method": "embedding",
-                "data": [],
-                "message": f"Error retrieving embeddings: {str(e)}"
-            }
+        # Search FAISS index
+        distances, indices = self.index.search(query_emb, min(top_k, len(self.player_metadata)))
         
-        if not players:
-            return {
-                "method": "embedding",
-                "data": [],
-                "message": "No player embeddings found. Run create_node_embeddings() first."
-            }
-        
-        # Calculate cosine similarity
-        similarities = []
-        for player in players:
-            player_emb = np.array(player['embedding'])
-            query_emb = np.array(query_embedding)
-            
-            similarity = np.dot(query_emb, player_emb) / (
-                np.linalg.norm(query_emb) * np.linalg.norm(player_emb)
-            )
-            
-            # Get additional player info
-            info_query = """
-                MATCH (p:Player {player_name: $name, season: $season})
-                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
-                WHERE f.season = $season
-                WITH p, sum(r.total_points) AS total_points,
-                     sum(r.goals_scored) AS goals,
-                     sum(r.assists) AS assists
-                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-                WITH p, total_points, goals, assists,
-                     collect(DISTINCT pos.name) AS positions
-                RETURN p.player_name AS name,
-                       positions,
-                       total_points, goals, assists
-            """
-            
-            with self.driver.session() as session:
-                info_result = session.run(info_query, {
-                    "name": player['name'],
-                    "season": player.get('season', '2022-23')
-                })
-                info = info_result.single()
-                
-                if info:
-                    similarities.append({
-                        "name": info['name'],
-                        "positions": info['positions'],
-                        "total_points": info['total_points'],
-                        "goals": info['goals'],
-                        "assists": info['assists'],
-                        "similarity": float(similarity)
-                    })
-        
-        # Sort by similarity and return top k
-        similarities.sort(key=lambda x: x['similarity'], reverse=True)
+        # Prepare results with similarity scores
+        results = []
+        for distance, idx in zip(distances[0], indices[0]):
+            if idx < len(self.player_metadata):
+                player = self.player_metadata[idx].copy()
+                # Convert L2 distance to similarity score (0-1)
+                similarity = 1 / (1 + distance)
+                player['similarity'] = float(similarity)
+                results.append(player)
         
         return {
             "method": "embedding",
-            "data": similarities[:top_k]
+            "data": results
         }
+    
+    def _load_vector_cache(self) -> bool:
+        """
+        Load cached FAISS index and player metadata from disk.
+        
+        Returns:
+            True if cache loaded successfully, False otherwise
+        """
+        index_path = self.cache_dir / "player_embeddings.faiss"
+        metadata_path = self.cache_dir / "player_metadata.pkl"
+        
+        if not index_path.exists() or not metadata_path.exists():
+            return False
+        
+        try:
+            self.index = faiss.read_index(str(index_path))
+            with open(metadata_path, 'rb') as f:
+                self.player_metadata = pickle.load(f)
+            print(f"Loaded {len(self.player_metadata)} player embeddings from cache")
+            return True
+        except Exception as e:
+            print(f"Error loading cache: {e}")
+            return False
+    
+    def _save_vector_cache(self):
+        """
+        Save FAISS index and player metadata to disk for fast future loading.
+        """
+        if self.index is None:
+            return
+        
+        index_path = self.cache_dir / "player_embeddings.faiss"
+        metadata_path = self.cache_dir / "player_metadata.pkl"
+        
+        faiss.write_index(self.index, str(index_path))
+        with open(metadata_path, 'wb') as f:
+            pickle.dump(self.player_metadata, f)
+        
+        print(f"Saved embeddings cache to {self.cache_dir}")
+    
+    def is_embeddings_ready(self) -> bool:
+        """
+        Check if embeddings are loaded and ready for queries.
+        
+        Returns:
+            True if embeddings are available, False otherwise
+        """
+        return self.index is not None and len(self.player_metadata) > 0
     
     def hybrid_retrieval(self, intent: str, entities: Dict, query_embedding: List[float]) -> Dict[str, Any]:
         """

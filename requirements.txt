@@ -11,6 +11,7 @@ transformers>=4.36.0
 
 # Embeddings
 sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
 
 # Data processing
 pandas>=2.1.4
