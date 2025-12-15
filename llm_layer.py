@@ -7,6 +7,7 @@ import requests
 import json
 from typing import Dict, List, Any
 import time
+from huggingface_hub import InferenceClient
 
 
 class FPLLLMLayer:
@@ -25,11 +26,20 @@ class FPLLLMLayer:
         self.openai_key = openai_key
         self.hf_key = hf_key
         
+        # Initialize HuggingFace client if token provided
+        self.hf_client = None
+        if hf_key:
+            try:
+                self.hf_client = InferenceClient(token=hf_key)
+            except Exception as e:
+                print(f"Warning: Could not initialize HuggingFace client: {e}")
+        
         # Available models
         self.models = {
             "gpt-3.5-turbo": self._call_openai,
-            "mistral-7b": self._call_huggingface,
-            "llama-2-7b": self._call_huggingface,
+            "mistral-7b": self._call_huggingface_inference,
+            "gemma-2b": self._call_huggingface_inference,
+            "llama-2-7b": self._call_huggingface_inference,
         }
     
     def format_context(self, baseline_results: Dict, embedding_results: Dict = None) -> str:
@@ -211,6 +221,66 @@ Be concise and specific, citing relevant statistics from the context.
                 "error": True
             }
     
+    def _call_huggingface_inference(self, prompt: str, model: str = "mistralai/Mistral-7B-Instruct-v0.2") -> Dict[str, Any]:
+        """
+        Call HuggingFace Inference API using InferenceClient
+        
+        Args:
+            prompt: Complete prompt
+            model: Model name (mistral-7b, gemma-2b, or llama-2-7b)
+            
+        Returns:
+            Response dictionary with answer and metadata
+        """
+        if not self.hf_client:
+            return {
+                "answer": "HuggingFace client not initialized. Please provide HF_TOKEN.",
+                "model": model,
+                "error": True
+            }
+        
+        # Map simple names to full model paths
+        model_map = {
+            "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.2",
+            "gemma-2b": "google/gemma-2-2b-it",
+            "llama-2-7b": "meta-llama/Llama-2-7b-chat-hf"
+        }
+        
+        full_model = model_map.get(model, model)
+        
+        try:
+            start_time = time.time()
+            
+            # Use chat completion for instruction-tuned models
+            response = self.hf_client.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                model=full_model,
+                max_tokens=500,
+                temperature=0.3,
+            )
+            
+            end_time = time.time()
+            
+            answer = response.choices[0].message.content
+            
+            # Extract answer after the ### ANSWER marker if present
+            if "### ANSWER" in answer:
+                answer = answer.split("### ANSWER")[-1].strip()
+            
+            return {
+                "answer": answer,
+                "model": full_model,
+                "response_time": end_time - start_time,
+                "error": False
+            }
+        
+        except Exception as e:
+            return {
+                "answer": f"Error calling HuggingFace Inference API: {str(e)}",
+                "model": full_model,
+                "error": True
+            }
+    
     def _call_local_model(self, prompt: str) -> Dict[str, Any]:
         """
         Fallback: Simple rule-based response (for demo purposes)
@@ -273,12 +343,8 @@ Be concise and specific, citing relevant statistics from the context.
         # Call appropriate LLM
         if model_name == "gpt-3.5-turbo" and self.openai_key:
             response = self._call_openai(prompt, model_name)
-        elif model_name in ["mistral-7b", "llama-2-7b"] and self.hf_key:
-            hf_model_map = {
-                "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.1",
-                "llama-2-7b": "meta-llama/Llama-2-7b-chat-hf"
-            }
-            response = self._call_huggingface(prompt, hf_model_map[model_name])
+        elif model_name in ["mistral-7b", "gemma-2b", "llama-2-7b"] and self.hf_client:
+            response = self._call_huggingface_inference(prompt, model_name)
         else:
             # Fallback to simple rule-based
             response = self._call_local_model(prompt)

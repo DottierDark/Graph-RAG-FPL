@@ -27,109 +27,152 @@ class FPLGraphRetriever:
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
         self.embedding_model = SentenceTransformer(embedding_model_name)
         
-        # Define Cypher query templates
+        # Define Cypher query templates (adapted for Milestone 2 schema)
         self.query_templates = {
             "player_search": """
                 MATCH (p:Player)
-                WHERE toLower(p.name) CONTAINS toLower($player_name)
-                RETURN p.name AS name, p.team AS team, p.position AS position, 
-                       p.price AS price, p.total_points AS points
+                WHERE toLower(p.player_name) CONTAINS toLower($player_name)
+                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+                WITH p, collect(DISTINCT pos.name) AS positions
+                RETURN p.player_name AS name, 
+                       positions AS positions,
+                       p.season AS season
                 LIMIT 10
             """,
             
             "top_players_by_position": """
-                MATCH (p:Player)
-                WHERE p.position = $position
-                RETURN p.name AS name, p.team AS team, p.total_points AS points,
-                       p.price AS price, p.goals AS goals, p.assists AS assists
-                ORDER BY p.total_points DESC
+                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
+                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                WHERE f.season = $season
+                WITH p, pos, sum(r.total_points) AS total_points, 
+                     sum(r.goals_scored) AS goals, sum(r.assists) AS assists
+                RETURN p.player_name AS name, 
+                       pos.name AS position,
+                       total_points, goals, assists
+                ORDER BY total_points DESC
                 LIMIT 10
             """,
             
             "player_stats": """
-                MATCH (p:Player {name: $player_name})
-                OPTIONAL MATCH (p)-[:PLAYS_FOR]->(t:Team)
-                RETURN p.name AS name, p.position AS position, p.price AS price,
-                       p.total_points AS points, p.goals AS goals, p.assists AS assists,
-                       p.clean_sheets AS clean_sheets, p.minutes AS minutes,
-                       t.name AS team
+                MATCH (p:Player {player_name: $player_name})
+                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+                OPTIONAL MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                WHERE f.season = $season
+                WITH p, collect(DISTINCT pos.name) AS positions,
+                     sum(r.total_points) AS total_points,
+                     sum(r.goals_scored) AS goals,
+                     sum(r.assists) AS assists,
+                     sum(r.minutes) AS minutes,
+                     sum(r.clean_sheets) AS clean_sheets
+                RETURN p.player_name AS name, 
+                       positions,
+                       p.season AS season,
+                       total_points, goals, assists, minutes, clean_sheets
             """,
             
             "team_players": """
-                MATCH (p:Player)-[:PLAYS_FOR]->(t:Team)
-                WHERE toLower(t.name) CONTAINS toLower($team_name)
-                RETURN p.name AS name, p.position AS position, p.total_points AS points,
-                       p.price AS price
-                ORDER BY p.total_points DESC
+                MATCH (f:Fixture)-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t:Team {name: $team_name})
+                MATCH (p:Player)-[r:PLAYED_IN]->(f)
+                WHERE f.season = $season
+                WITH p, sum(r.total_points) AS total_points
+                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+                WITH p, total_points, collect(DISTINCT pos.name) AS positions
+                RETURN p.player_name AS name, 
+                       positions,
+                       total_points
+                ORDER BY total_points DESC
                 LIMIT 15
             """,
             
-            "players_by_price": """
-                MATCH (p:Player)
-                WHERE p.position = $position AND p.price <= $max_price
-                RETURN p.name AS name, p.team AS team, p.price AS price,
-                       p.total_points AS points, p.goals AS goals, p.assists AS assists
-                ORDER BY p.total_points DESC
+            "players_by_performance": """
+                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
+                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                WHERE f.season = $season
+                WITH p, sum(r.total_points) AS total_points,
+                     sum(r.goals_scored) AS goals,
+                     sum(r.assists) AS assists
+                WHERE total_points >= $min_points
+                RETURN p.player_name AS name, 
+                       total_points, goals, assists
+                ORDER BY total_points DESC
                 LIMIT 10
             """,
             
             "player_comparison": """
                 MATCH (p:Player)
-                WHERE p.name IN $player_names
-                RETURN p.name AS name, p.position AS position, p.price AS price,
-                       p.total_points AS points, p.goals AS goals, p.assists AS assists,
-                       p.clean_sheets AS clean_sheets, p.bonus AS bonus
+                WHERE p.player_name IN $player_names
+                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                WHERE f.season = $season
+                WITH p, sum(r.total_points) AS total_points,
+                     sum(r.goals_scored) AS goals,
+                     sum(r.assists) AS assists,
+                     sum(r.clean_sheets) AS clean_sheets,
+                     sum(r.bonus) AS bonus
+                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+                WITH p, total_points, goals, assists, clean_sheets, bonus,
+                     collect(DISTINCT pos.name) AS positions
+                RETURN p.player_name AS name, 
+                       positions,
+                       total_points, goals, assists, clean_sheets, bonus
             """,
             
             "gameweek_performance": """
-                MATCH (p:Player)-[r:PLAYED_IN]->(g:Gameweek)
-                WHERE g.gameweek_number = $gameweek AND p.name = $player_name
-                RETURN p.name AS name, g.gameweek_number AS gameweek,
-                       r.points AS points, r.goals AS goals, r.assists AS assists
+                MATCH (p:Player {player_name: $player_name})-[r:PLAYED_IN]->(f:Fixture)
+                MATCH (f)-[:IN_GAMEWEEK]->(g:Gameweek {gameweek_number: $gameweek})
+                WHERE f.season = $season
+                RETURN p.player_name AS name, 
+                       g.gameweek_number AS gameweek,
+                       r.total_points AS points, 
+                       r.goals_scored AS goals, 
+                       r.assists AS assists,
+                       r.minutes AS minutes
             """,
             
             "top_scorers": """
-                MATCH (p:Player)
-                WHERE p.position = $position
-                RETURN p.name AS name, p.team AS team, p.goals AS goals,
-                       p.total_points AS points, p.price AS price
-                ORDER BY p.goals DESC
+                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
+                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                WHERE f.season = $season
+                WITH p, sum(r.goals_scored) AS goals,
+                     sum(r.total_points) AS total_points
+                RETURN p.player_name AS name, 
+                       goals, total_points
+                ORDER BY goals DESC
                 LIMIT 10
             """,
             
             "clean_sheet_leaders": """
-                MATCH (p:Player)
-                WHERE p.position IN ['GKP', 'DEF']
-                RETURN p.name AS name, p.team AS team, p.position AS position,
-                       p.clean_sheets AS clean_sheets, p.total_points AS points
-                ORDER BY p.clean_sheets DESC
+                MATCH (p:Player)-[:PLAYS_AS]->(pos:Position)
+                WHERE pos.name IN ['GKP', 'DEF']
+                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                WHERE f.season = $season
+                WITH p, pos, sum(r.clean_sheets) AS clean_sheets,
+                     sum(r.total_points) AS total_points
+                RETURN p.player_name AS name, 
+                       pos.name AS position,
+                       clean_sheets, total_points
+                ORDER BY clean_sheets DESC
                 LIMIT 10
             """,
             
-            "fixtures": """
-                MATCH (t:Team)-[f:PLAYS_AGAINST]->(opp:Team)
-                WHERE toLower(t.name) CONTAINS toLower($team_name)
-                  AND f.gameweek = $gameweek
-                RETURN t.name AS team, opp.name AS opponent, 
-                       f.gameweek AS gameweek, f.difficulty AS difficulty
+            "season_overview": """
+                MATCH (f:Fixture {season: $season})
+                WITH count(DISTINCT f) AS total_fixtures
+                MATCH (g:Gameweek)
+                MATCH (gw_fixture:Fixture {season: $season})-[:IN_GAMEWEEK]->(g)
+                WITH total_fixtures, count(DISTINCT g) AS total_gameweeks
+                MATCH (p:Player {season: $season})
+                RETURN total_fixtures, total_gameweeks, count(p) AS total_players
             """,
             
-            "value_picks": """
-                MATCH (p:Player)
-                WHERE p.position = $position
-                WITH p, (toFloat(p.total_points) / toFloat(p.price)) AS value
-                RETURN p.name AS name, p.team AS team, p.price AS price,
-                       p.total_points AS points, value
-                ORDER BY value DESC
-                LIMIT 10
-            """,
-            
-            "form_players": """
-                MATCH (p:Player)
-                WHERE p.position = $position
-                RETURN p.name AS name, p.team AS team, p.form AS form,
-                       p.total_points AS points, p.price AS price
-                ORDER BY toFloat(p.form) DESC
+            "best_performers_gameweek": """
+                MATCH (f:Fixture)-[:IN_GAMEWEEK]->(g:Gameweek {gameweek_number: $gameweek})
+                MATCH (p:Player)-[r:PLAYED_IN]->(f)
+                WHERE f.season = $season
+                RETURN p.player_name AS name,
+                       r.total_points AS points,
+                       r.goals_scored AS goals,
+                       r.assists AS assists
+                ORDER BY r.total_points DESC
                 LIMIT 10
             """
         }
@@ -175,6 +218,9 @@ class FPLGraphRetriever:
             "data": []
         }
         
+        # Default season
+        season = entities.get("seasons", ["2022-23"])[0] if entities.get("seasons") else "2022-23"
+        
         # Route to appropriate query based on intent
         if intent == "player_search" and entities.get("players"):
             params = {"player_name": entities["players"][0]}
@@ -182,36 +228,55 @@ class FPLGraphRetriever:
             results["query_type"] = "player_search"
         
         elif intent == "player_performance" and entities.get("players"):
-            params = {"player_name": entities["players"][0]}
+            params = {
+                "player_name": entities["players"][0],
+                "season": season
+            }
             results["data"] = self.execute_query("player_stats", params)
             results["query_type"] = "player_stats"
         
         elif intent == "recommendation" and entities.get("positions"):
             position = entities["positions"][0]
-            if "price" in entities or "value" in entities or "cheap" in intent:
-                params = {"position": position, "max_price": 8.0}
-                results["data"] = self.execute_query("players_by_price", params)
-                results["query_type"] = "players_by_price"
-            else:
-                params = {"position": position}
-                results["data"] = self.execute_query("top_players_by_position", params)
-                results["query_type"] = "top_players_by_position"
+            params = {
+                "position": position,
+                "season": season
+            }
+            results["data"] = self.execute_query("top_players_by_position", params)
+            results["query_type"] = "top_players_by_position"
         
-        elif intent == "comparison" and len(entities.get("players", [])) >= 2:
-            params = {"player_names": entities["players"][:2]}
+        elif intent == "comparison" and entities.get("players") and len(entities["players"]) >= 2:
+            params = {
+                "player_names": entities["players"][:2],
+                "season": season
+            }
             results["data"] = self.execute_query("player_comparison", params)
             results["query_type"] = "player_comparison"
         
         elif intent == "team_analysis" and entities.get("teams"):
-            params = {"team_name": entities["teams"][0]}
+            params = {
+                "team_name": entities["teams"][0],
+                "season": season
+            }
             results["data"] = self.execute_query("team_players", params)
             results["query_type"] = "team_players"
         
+        elif intent == "fixture" and entities.get("gameweeks"):
+            gameweek = int(entities["gameweeks"][0])
+            params = {
+                "gameweek": gameweek,
+                "season": season
+            }
+            results["data"] = self.execute_query("best_performers_gameweek", params)
+            results["query_type"] = "best_performers_gameweek"
+        
         else:
-            # Default: show top players
-            params = {"position": "FWD"}
-            results["data"] = self.execute_query("top_players_by_position", params)
-            results["query_type"] = "top_players_by_position"
+            # Default: show top scorers for forwards
+            params = {
+                "position": "FWD",
+                "season": season
+            }
+            results["data"] = self.execute_query("top_scorers", params)
+            results["query_type"] = "top_scorers"
         
         return results
     
@@ -221,10 +286,21 @@ class FPLGraphRetriever:
         This should be run once during setup
         """
         query = """
-            MATCH (p:Player)
-            RETURN p.name AS name, p.position AS position, p.team AS team,
-                   p.total_points AS points, p.price AS price,
-                   p.goals AS goals, p.assists AS assists
+            MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
+            WHERE f.season = '2022-23'
+            WITH p, 
+                 sum(r.total_points) AS total_points,
+                 sum(r.goals_scored) AS goals,
+                 sum(r.assists) AS assists,
+                 sum(r.minutes) AS minutes
+            OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+            WITH p, total_points, goals, assists, minutes,
+                 collect(DISTINCT pos.name) AS positions
+            RETURN p.player_name AS name, 
+                   positions,
+                   p.season AS season,
+                   total_points, goals, assists, minutes
+            LIMIT 100
         """
         
         with self.driver.session() as session:
@@ -232,23 +308,32 @@ class FPLGraphRetriever:
             players = [dict(record) for record in result]
         
         # Create text representation for each player
+        embeddings_created = 0
         for player in players:
-            text = f"Player: {player['name']}, Position: {player['position']}, " \
-                   f"Team: {player['team']}, Points: {player['points']}, " \
-                   f"Goals: {player['goals']}, Assists: {player['assists']}"
+            positions_str = ', '.join(player.get('positions', ['Unknown']))
+            text = f"Player: {player['name']}, Position: {positions_str}, " \
+                   f"Season: {player.get('season', '2022-23')}, " \
+                   f"Points: {player.get('total_points', 0)}, " \
+                   f"Goals: {player.get('goals', 0)}, Assists: {player.get('assists', 0)}"
             
             embedding = self.embedding_model.encode(text).tolist()
             
             # Store embedding in Neo4j
             update_query = """
-                MATCH (p:Player {name: $name})
+                MATCH (p:Player {player_name: $name, season: $season})
                 SET p.embedding = $embedding
             """
             
             with self.driver.session() as session:
-                session.run(update_query, {"name": player['name'], "embedding": embedding})
+                session.run(update_query, {
+                    "name": player['name'], 
+                    "season": player.get('season', '2022-23'),
+                    "embedding": embedding
+                })
+                embeddings_created += 1
         
-        print(f"Created embeddings for {len(players)} players")
+        print(f"Created embeddings for {embeddings_created} players")
+        return embeddings_created
     
     def embedding_retrieval(self, query_embedding: List[float], top_k: int = 10) -> Dict[str, Any]:
         """
@@ -266,15 +351,23 @@ class FPLGraphRetriever:
         
         query = """
             MATCH (p:Player)
-            WHERE p.embedding IS NOT NULL
-            RETURN p.name AS name, p.position AS position, p.team AS team,
-                   p.total_points AS points, p.price AS price,
+            WHERE p.embedding IS NOT NULL AND p.season = '2022-23'
+            RETURN p.player_name AS name, 
+                   p.season AS season,
                    p.embedding AS embedding
+            LIMIT 200
         """
         
         with self.driver.session() as session:
             result = session.run(query)
             players = [dict(record) for record in result]
+        
+        if not players:
+            return {
+                "method": "embedding",
+                "data": [],
+                "message": "No player embeddings found. Run create_node_embeddings() first."
+            }
         
         # Calculate cosine similarity
         similarities = []
@@ -286,14 +379,38 @@ class FPLGraphRetriever:
                 np.linalg.norm(query_emb) * np.linalg.norm(player_emb)
             )
             
-            similarities.append({
-                "name": player['name'],
-                "position": player['position'],
-                "team": player['team'],
-                "points": player['points'],
-                "price": player['price'],
-                "similarity": float(similarity)
-            })
+            # Get additional player info
+            info_query = """
+                MATCH (p:Player {player_name: $name, season: $season})
+                MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                WHERE f.season = $season
+                WITH p, sum(r.total_points) AS total_points,
+                     sum(r.goals_scored) AS goals,
+                     sum(r.assists) AS assists
+                OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+                WITH p, total_points, goals, assists,
+                     collect(DISTINCT pos.name) AS positions
+                RETURN p.player_name AS name,
+                       positions,
+                       total_points, goals, assists
+            """
+            
+            with self.driver.session() as session:
+                info_result = session.run(info_query, {
+                    "name": player['name'],
+                    "season": player.get('season', '2022-23')
+                })
+                info = info_result.single()
+                
+                if info:
+                    similarities.append({
+                        "name": info['name'],
+                        "positions": info['positions'],
+                        "total_points": info['total_points'],
+                        "goals": info['goals'],
+                        "assists": info['assists'],
+                        "similarity": float(similarity)
+                    })
         
         # Sort by similarity and return top k
         similarities.sort(key=lambda x: x['similarity'], reverse=True)
