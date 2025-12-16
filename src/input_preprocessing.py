@@ -15,6 +15,22 @@ from .config import (
     get_embedding_model
 )
 
+# Try to import spaCy for better entity extraction
+try:
+    import spacy
+    try:
+        nlp = spacy.load("en_core_web_sm")
+        USE_SPACY = True
+    except OSError:
+        # If model not found, use basic tokenization
+        USE_SPACY = False
+        print("⚠️ spaCy model 'en_core_web_sm' not found. Using basic tokenization.")
+        print("   Install with: python -m spacy download en_core_web_sm")
+except ImportError:
+    USE_SPACY = False
+    print("⚠️ spaCy not installed. Using basic tokenization.")
+    print("   Install with: pip install spacy && python -m spacy download en_core_web_sm")
+
 class FPLInputPreprocessor:
     """
     Handles preprocessing of user queries for FPL assistant.
@@ -70,6 +86,7 @@ class FPLInputPreprocessor:
     def extract_entities(self, query: str) -> Dict[str, List[str]]:
         """
         Extract FPL-specific entities from query using centralized entity definitions.
+        Uses spaCy NER if available, otherwise falls back to pattern matching.
         
         Args:
             query: User query string
@@ -114,30 +131,11 @@ class FPLInputPreprocessor:
         gameweeks = re.findall(gameweek_pattern, query_lower)
         entities["gameweeks"] = gameweeks
         
-        # Extract player names (capitalized words not matching other categories)
-        # This is simplified - in production you'd use NER or match against known players
-        words = query.split()
-        potential_names = []
-        # Common query words to exclude from player names (including intent keywords)
-        excluded_words = ["what", "which", "show", "find", "get", "the", "who", "are", "is", 
-                         "top", "best", "how", "when", "where", "why", "can", "could", "would",
-                         "compare", "vs", "versus", "between", "and", "or", "with", "against"]
-        
-        for i, word in enumerate(words):
-            if word[0].isupper() and len(word) > 2:
-                # Check if it's not a common word or intent keyword
-                if word.lower() not in excluded_words:
-                    potential_names.append(word)
-        
-        # Split potential names by common separators to handle "Salah Son" -> ["Salah", "Son"]
-        # Don't combine all capitalized words into one name for comparison queries
-        if potential_names:
-            # If there are multiple capitalized words, treat each as a separate player
-            if len(potential_names) > 1 and any(kw in query_lower for kw in ['compare', 'vs', 'versus']):
-                entities["players"] = potential_names
-            else:
-                # Otherwise combine consecutive words as full name
-                entities["players"] = [" ".join(potential_names)]
+        # Extract player names using spaCy if available, otherwise use pattern matching
+        if USE_SPACY:
+            entities["players"] = self._extract_players_with_spacy(query)
+        else:
+            entities["players"] = self._extract_players_basic(query)
         
         # Extract team names using centralized team list
         for team in FPL_TEAMS:
@@ -145,6 +143,67 @@ class FPLInputPreprocessor:
                 entities["teams"].append(team)
         
         return entities
+    
+    def _extract_players_with_spacy(self, query: str) -> List[str]:
+        """
+        Extract player names using spaCy NER.
+        
+        Args:
+            query: User query string
+            
+        Returns:
+            List of player names
+        """
+        doc = nlp(query)
+        players = []
+        
+        # Extract PERSON entities
+        for ent in doc.ents:
+            if ent.label_ == "PERSON":
+                players.append(ent.text)
+        
+        # If no PERSON entities found, fall back to basic extraction
+        if not players:
+            players = self._extract_players_basic(query)
+        
+        return players
+    
+    def _extract_players_basic(self, query: str) -> List[str]:
+        """
+        Extract player names using basic pattern matching (fallback method).
+        
+        Args:
+            query: User query string
+            
+        Returns:
+            List of player names
+        """
+        # Remove common query words and intent keywords
+        excluded_words = ["what", "which", "show", "find", "get", "the", "who", "are", "is", 
+                         "top", "best", "how", "when", "where", "why", "can", "could", "would",
+                         "compare", "vs", "versus", "between", "and", "or", "with", "against",
+                         "me", "my", "their", "his", "her", "stats", "performance", "players"]
+        
+        # Tokenize and filter
+        words = query.split()
+        potential_names = []
+        
+        for word in words:
+            # Check if word starts with uppercase and is not excluded
+            if len(word) > 2 and word[0].isupper() and word.lower() not in excluded_words:
+                # Also check it's not a team name
+                if word not in FPL_TEAMS:
+                    potential_names.append(word)
+        
+        # If comparison query, treat each capitalized word as separate player
+        query_lower = query.lower()
+        if len(potential_names) > 1 and any(kw in query_lower for kw in ['compare', 'vs', 'versus']):
+            return potential_names
+        elif potential_names:
+            # Otherwise combine as single full name
+            return [" ".join(potential_names)]
+        
+        return []
     
     def embed_query(self, query: str) -> List[float]:
         """
