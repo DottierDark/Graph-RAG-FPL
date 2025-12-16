@@ -49,7 +49,7 @@ class FPLLLMLayer:
             "mistral-7b": self._call_huggingface_inference,
             "gemma-2b": self._call_huggingface_inference,
             "llama-2-7b": self._call_huggingface_inference,
-            "phi-2": self._call_huggingface_inference,
+            "qwen-0.5b": self._call_huggingface_inference,
         }
     
     def format_context(self, baseline_results: Dict, embedding_results: Dict = None) -> str:
@@ -263,8 +263,8 @@ class FPLLLMLayer:
             model_config = get_llm_config("gemma")
         elif model == "llama-2-7b":
             model_config = get_llm_config("llama")
-        elif model == "phi-2":
-            model_config = get_llm_config("phi")
+        elif model == "qwen-0.5b":
+            model_config = get_llm_config("qwen")
         else:
             model_config = get_llm_config("mistral")  # default
         
@@ -273,18 +273,8 @@ class FPLLLMLayer:
         try:
             start_time = time.time()
             
-            # For phi-2, create a model-specific client and use text_generation
-            if model == "phi-2":
-                phi_client = InferenceClient(model=full_model, token=self.hf_key)
-                answer = phi_client.text_generation(
-                    prompt,
-                    max_new_tokens=model_config['max_tokens'],
-                    temperature=model_config['temperature'],
-                    do_sample=True
-                )
-            
             # Special handling for LLaMA-2 (gated model)
-            elif model == "llama-2-7b":
+            if model == "llama-2-7b":
                 try:
                     response = self.hf_client.chat_completion(
                         messages=[{"role": "user", "content": prompt}],
@@ -406,7 +396,7 @@ class FPLLLMLayer:
         # Call appropriate LLM
         if model_name == "gpt-3.5-turbo" and self.openai_key:
             response = self._call_openai(prompt, model_name)
-        elif model_name in ["mistral-7b", "gemma-2b", "llama-2-7b", "phi-2"] and self.hf_client:
+        elif model_name in ["mistral-7b", "gemma-2b", "llama-2-7b", "qwen-0.5b"] and self.hf_client:
             response = self._call_huggingface_inference(prompt, model_name)
         else:
             # Fallback to simple rule-based

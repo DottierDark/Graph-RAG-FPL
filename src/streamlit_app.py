@@ -482,7 +482,7 @@ def main():
     # Model selection
     selected_model = st.sidebar.selectbox(
         "Select LLM Model",
-        ["gemma-2b", "mistral-7b", "phi-2", "llama-2-7b", "gpt-3.5-turbo", "rule-based-fallback"],
+        ["gemma-2b", "mistral-7b", "qwen-0.5b", "llama-2-7b", "gpt-3.5-turbo", "rule-based-fallback"],
         index=0,  # Default to gemma-2b (FREE via HuggingFace)
         help="Gemma, Mistral & Phi use free HuggingFace API. LLaMA-2 requires license acceptance. GPT requires OpenAI API key (paid)."
     )

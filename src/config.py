@@ -56,12 +56,12 @@ LLM_MODELS = {
         "provider": "huggingface",
         "requires_auth": True  # Requires accepting license on HuggingFace
     },
-    "phi": {
-        "model_name": "microsoft/phi-2",
+    "qwen": {
+        "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
         "temperature": 0.3,
         "max_tokens": 500,
         "provider": "huggingface"
-    }
+    },
 }
 
 # Default LLM to use when no API keys provided
