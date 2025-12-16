@@ -235,26 +235,28 @@ class FPLGraphRetriever:
         limit_clause = f"LIMIT {max_players}" if max_players else ""
         
         # OPTIMIZATION: More efficient query - get all stats in one go
+        # Aggregate per player per season with correct grouping and NULL handling
         query = f"""
             MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
-            WHERE f.season = '2022-23'
-            WITH p, 
-                 sum(r.total_points) AS total_points,
-                 sum(r.goals_scored) AS goals,
-                 sum(r.assists) AS assists,
-                 sum(r.minutes) AS minutes,
-                 sum(r.clean_sheets) AS clean_sheets,
-                 sum(r.bonus) AS bonus,
-                 count(f) AS appearances
             OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-            OPTIONAL MATCH (p)-[:PLAYED_IN]->(:Fixture)-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t:Team)
-            WITH p, total_points, goals, assists, minutes, clean_sheets, bonus, appearances,
+            WITH p, f.season as season,
                  collect(DISTINCT pos.name) AS positions,
+                 sum(COALESCE(r.total_points, 0)) AS total_points,
+                 sum(COALESCE(r.goals_scored, 0)) AS goals,
+                 sum(COALESCE(r.assists, 0)) AS assists,
+                 sum(COALESCE(r.minutes, 0)) AS minutes,
+                 sum(COALESCE(r.clean_sheets, 0)) AS clean_sheets,
+                 sum(COALESCE(r.bonus, 0)) AS bonus,
+                 count(DISTINCT f) AS appearances
+            WITH p, season, positions, total_points, goals, assists, minutes, clean_sheets, bonus, appearances
+            OPTIONAL MATCH (p)-[:PLAYED_IN]->(f2:Fixture)-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t:Team)
+            WHERE f2.season = season
+            WITH p, season, positions, total_points, goals, assists, minutes, clean_sheets, bonus, appearances,
                  collect(DISTINCT t.name)[0] AS team
             RETURN p.player_name AS name, 
                    positions,
                    team,
-                   p.season AS season,
+                   season,
                    total_points, goals, assists, minutes, clean_sheets, bonus, appearances
             ORDER BY total_points DESC
             {limit_clause}
