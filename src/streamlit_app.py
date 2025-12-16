@@ -85,31 +85,45 @@ class SessionStateManager:
         try:
             uri, username, password = TokenManager.get_neo4j_credentials()
             
-            # Initialize retriever with integrated FAISS vector store
+            # List of embedding models to initialize
+            embedding_models_to_init = [
+                "sentence-transformers/all-MiniLM-L6-v2",
+                "sentence-transformers/all-mpnet-base-v2"
+            ]
+            
+            # Build embeddings for all models if not already cached
+            for model_name in embedding_models_to_init:
+                temp_retriever = FPLGraphRetriever(
+                    uri=uri,
+                    username=username,
+                    password=password,
+                    embedding_model_name=model_name
+                )
+                
+                if not temp_retriever.is_embeddings_ready():
+                    model_short_name = model_name.split("/")[1]
+                    st.info(f"🔄 Building embeddings for {model_short_name}...")
+                    st.info("⏱️ This is a one-time process that takes 2-3 minutes per model.")
+                    
+                    with st.spinner(f"Creating embeddings for {model_short_name}... Please wait"):
+                        try:
+                            player_count = temp_retriever.create_node_embeddings()
+                            st.success(f"✅ Successfully created embeddings for {model_short_name} ({player_count} players)!")
+                        except Exception as build_error:
+                            st.error(f"❌ Failed to build embeddings for {model_short_name}: {str(build_error)}")
+            
+            # Initialize retriever with the default selected model
+            full_model_name = f"sentence-transformers/{embedding_model}"
             st.session_state.retriever = FPLGraphRetriever(
                 uri=uri,
                 username=username,
-                password=password
+                password=password,
+                embedding_model_name=full_model_name
             )
             
-            # Check if embeddings are already loaded from cache
+            # Check if embeddings are ready for the selected model
             embeddings_ready = st.session_state.retriever.is_embeddings_ready()
             st.session_state.embeddings_loaded = embeddings_ready
-            
-            # AUTO-BUILD: If no embeddings exist, create them automatically
-            if not embeddings_ready:
-                st.info("🔄 No embeddings found. Building embeddings for all ~1600 players...")
-                st.info("⏱️ This is a one-time process that takes 2-3 minutes. Future startups will be instant!")
-                
-                with st.spinner("Creating embeddings... Please wait (this only happens once)"):
-                    try:
-                        player_count = st.session_state.retriever.create_node_embeddings()
-                        st.session_state.embeddings_loaded = True
-                        st.success(f"✅ Successfully created embeddings for {player_count} players! System ready.")
-                    except Exception as build_error:
-                        st.error(f"❌ Failed to build embeddings: {str(build_error)}")
-                        st.warning("You can try again later via the 'Create Embeddings' button in the sidebar.")
-                        st.session_state.embeddings_loaded = False
             
         except Exception as e:
             st.error(f"{ERROR_MESSAGES['neo4j_connection_failed']}: {str(e)}")
@@ -439,6 +453,18 @@ def main():
         ["all-MiniLM-L6-v2", "all-mpnet-base-v2"],
         index=0
     )
+    
+    # Store selected embedding model in session state
+    if 'selected_embedding_model' not in st.session_state:
+        st.session_state.selected_embedding_model = embedding_model
+    
+    # If model changed, reinitialize retriever
+    if st.session_state.selected_embedding_model != embedding_model:
+        st.session_state.selected_embedding_model = embedding_model
+        # Clear retriever to force reinitialization with new model
+        if 'retriever' in st.session_state:
+            del st.session_state.retriever
+        st.rerun()
 
     # Retrieval method
     embeddings_available = SessionStateManager.check_embeddings_exist()
@@ -453,10 +479,11 @@ def main():
     # Show embedding status and warn if not available
     if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
         if embeddings_available:
-            st.sidebar.success("✅ Embeddings available")
+            st.sidebar.success(f"✅ Embeddings available for {embedding_model}")
         else:
-            st.sidebar.error("❌ Embeddings not available!")
-            st.sidebar.warning("⚠️ Queries will fail. Please create embeddings or use Baseline.")
+            st.sidebar.error(f"❌ No embeddings for {embedding_model}!")
+            st.sidebar.warning("⚠️ Queries will fail. Please create embeddings for this model or use Baseline.")
+            st.sidebar.info(f"💡 Each embedding model requires its own embeddings to be built.")
             if st.sidebar.button("🔄 Create Embeddings Now", use_container_width=True, type="primary"):
                 st.session_state.show_embedding_creator = True
                 st.rerun()
