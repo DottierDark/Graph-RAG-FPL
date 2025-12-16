@@ -445,7 +445,17 @@ EXAMPLE_QUERIES = [
     "Arsenal players with most clean sheets",
     "Top scorers in gameweek 10",
     "Which defenders have the best value?",
-    "Liverpool's upcoming fixtures"
+    "Liverpool's upcoming fixtures",
+    "How many total gameweeks are there?",
+    "How many players are in the database?",
+    "Which teams only played in 2021-22?",
+    "Who scored the max points in 2022-23?",
+    "How many matches did Elneny participate in?",
+    "Who has the highest total assists?",
+    "What is the average points by position?",
+    "Show me away wins with 3+ goals in 2022-23",
+    "Which team had the most clean sheets in 2021-22?",
+    "Players with goal and assist in same fixture 2022-23"
 ]
 
 
