@@ -125,12 +125,13 @@ class SessionStateManager:
     @staticmethod
     def check_embeddings_exist() -> bool:
         """Check if embeddings are available in vector cache"""
-        if "embeddings_checked" not in st.session_state:
-            # Check if vector cache exists
-            embeddings_loaded = st.session_state.get('embeddings_loaded', False)
-            st.session_state.embeddings_exist = embeddings_loaded
-            st.session_state.embeddings_checked = True
-        return st.session_state.get('embeddings_exist', False)
+        # Always check the current state from the retriever
+        if st.session_state.get('retriever'):
+            embeddings_ready = st.session_state.retriever.is_embeddings_ready()
+            st.session_state.embeddings_exist = embeddings_ready
+            st.session_state.embeddings_loaded = embeddings_ready
+            return embeddings_ready
+        return False
     
     @staticmethod
     def add_message(role: str, content: str, metadata: Dict[str, Any] = None):
@@ -224,6 +225,12 @@ class QueryProcessor:
                 results["metadata"]["results_count"] = len(baseline_results.get('data', []))
             
             if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
+                # Check if embeddings are ready before attempting retrieval
+                if not retriever.is_embeddings_ready():
+                    results["error"] = "Embeddings not available. Please create embeddings first or use Baseline retrieval."
+                    results["metadata"]["semantic_matches"] = 0
+                    return results
+                
                 # Use integrated FAISS-based embedding retrieval
                 embedding_results = retriever.embedding_retrieval(
                     preprocessed['embedding'],
@@ -360,19 +367,19 @@ if st.session_state.get('start_embedding_creation', False):
             st.write("📊 Step 2: Loading players from Neo4j...")
             
             try:
+                retriever = st.session_state.get('retriever')
+                if not retriever:
+                    raise Exception("Retriever not initialized")
+                
+                # Build index with integrated FAISS vector store
+                player_count = retriever.create_node_embeddings()
+                
                 st.write(f"✓ Loaded {player_count} players")
                 st.write(f"🔢 Step 3: Generated embeddings with FAISS ({player_count} total)")
                 st.write("💾 Step 4: Cached to data/cache/ directory")
                 st.write("✓ All 1600+ players ready for semantic search!")
                 
                 status.update(label="✅ Full dataset embeddings created successfully!", state="complete")
-                
-                st.write(f"✓ Loaded {player_count} players")
-                st.write("🔢 Step 3: Generated embeddings with FAISS")
-                st.write("💾 Step 4: Cached to vector_cache/ directory")
-                st.write("✓ Embeddings ready for semantic search")
-                
-                status.update(label="✅ Embeddings created successfully!", state="complete")
                 
                 # Reset embedding check
                 st.session_state.embeddings_checked = False
@@ -442,18 +449,20 @@ embeddings_available = SessionStateManager.check_embeddings_exist()
 retrieval_method = st.sidebar.radio(
     "Retrieval Method",
     ["Baseline (Cypher)", "Embedding-based", "Hybrid (Both)"],
-    index=0,  # Default to Baseline (fastest and no embeddings needed)
+    index=0,  # Default to Baseline
     help="Baseline uses direct Cypher queries. Embedding/Hybrid require embeddings to be created first."
 )
 
-# Show embedding status
+# Show embedding status and warn if not available
 if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
     if embeddings_available:
         st.sidebar.success("✅ Embeddings available")
     else:
-        st.sidebar.warning("⚠️ Embeddings not found")
-        if st.sidebar.button("🔄 Create Embeddings Now", use_container_width=True):
+        st.sidebar.error("❌ Embeddings not available!")
+        st.sidebar.warning("⚠️ Queries will fail. Please create embeddings or use Baseline.")
+        if st.sidebar.button("🔄 Create Embeddings Now", use_container_width=True, type="primary"):
             st.session_state.show_embedding_creator = True
+            st.rerun()
 
 # Example questions from centralized config
 st.sidebar.header("📝 Example Questions")
@@ -517,6 +526,14 @@ if query:
     if not st.session_state.retriever:
         with st.chat_message("assistant"):
             st.error("Neo4j connection not available. Please check your configuration.")
+    elif retrieval_method in ["Embedding-based", "Hybrid (Both)"] and not embeddings_available:
+        # Safety check: prevent processing if embeddings not available
+        with st.chat_message("assistant"):
+            st.error("❌ Cannot process query: Embeddings not available")
+            st.info("💡 Please create embeddings first or switch to 'Baseline (Cypher)' retrieval method.")
+            if st.button("🔄 Create Embeddings", key="create_from_error"):
+                st.session_state.show_embedding_creator = True
+                st.rerun()
     else:
         # Show assistant response with clean status tracking
         with st.chat_message("assistant"):
