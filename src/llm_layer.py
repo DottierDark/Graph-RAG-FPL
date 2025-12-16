@@ -273,10 +273,18 @@ class FPLLLMLayer:
         try:
             start_time = time.time()
             
-            # Special handling for LLaMA-2 (requires gated access)
-            if model == "llama-2-7b":
-                # LLaMA-2 requires accepting license on HuggingFace
-                # Try with text_generation as fallback
+            # For phi-2, create a model-specific client and use text_generation
+            if model == "phi-2":
+                phi_client = InferenceClient(model=full_model, token=self.hf_key)
+                answer = phi_client.text_generation(
+                    prompt,
+                    max_new_tokens=model_config['max_tokens'],
+                    temperature=model_config['temperature'],
+                    do_sample=True
+                )
+            
+            # Special handling for LLaMA-2 (gated model)
+            elif model == "llama-2-7b":
                 try:
                     response = self.hf_client.chat_completion(
                         messages=[{"role": "user", "content": prompt}],
@@ -287,6 +295,7 @@ class FPLLLMLayer:
                     answer = response.choices[0].message.content
                 except Exception as llama_error:
                     # Fallback: Use text_generation endpoint
+                    print(f"⚠️  chat_completion failed for {model}, using text_generation")
                     response = self.hf_client.text_generation(
                         prompt,
                         model=full_model,
@@ -296,7 +305,7 @@ class FPLLLMLayer:
                     )
                     answer = response if isinstance(response, str) else str(response)
             else:
-                # Use chat completion for instruction-tuned models
+                # Use chat completion for instruction-tuned models (gemma, mistral)
                 response = self.hf_client.chat_completion(
                     messages=[{"role": "user", "content": prompt}],
                     model=full_model,
@@ -319,8 +328,18 @@ class FPLLLMLayer:
             }
         
         except Exception as e:
+            print(f"❌ HuggingFace API Error for {model}:")
+            print(f"   Error: {str(e)}")
+            print(f"   Error type: {type(e).__name__}")
+            import traceback
+            print(f"   Traceback:\n{traceback.format_exc()}")
+            
+            error_msg = f"{ERROR_MESSAGES['llm_call_failed']}: {str(e)}"
+            if model == "llama-2-7b":
+                error_msg += ". Note: LLaMA-2 requires accepting the license at https://huggingface.co/meta-llama/Llama-2-7b-chat-hf"
+            
             return {
-                "answer": f"{ERROR_MESSAGES['llm_call_failed']}: {str(e)}. Note: LLaMA-2 requires accepting the license at https://huggingface.co/meta-llama/Llama-2-7b-chat-hf",
+                "answer": error_msg,
                 "model": full_model,
                 "error": True
             }
