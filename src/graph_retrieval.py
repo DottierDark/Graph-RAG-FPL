@@ -221,42 +221,39 @@ class FPLGraphRetriever:
 
         # Query to get comprehensive player data
         query = f"""
-            MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
-            OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-            
-            WITH p,
-                collect(DISTINCT pos.name) AS all_positions,
-                collect(DISTINCT f.season) AS seasons,
-                sum(COALESCE(r.total_points, 0)) AS total_points,
-                sum(COALESCE(r.goals_scored, 0)) AS total_goals,
-                sum(COALESCE(r.assists, 0)) AS total_assists,
-                sum(COALESCE(r.minutes, 0)) AS total_minutes,
-                sum(COALESCE(r.clean_sheets, 0)) AS total_clean_sheets,
-                sum(COALESCE(r.bonus, 0)) AS total_bonus,
-                count(DISTINCT f) AS total_appearances
-            
-            OPTIONAL MATCH (p)-[:PLAYED_IN]->(f2:Fixture)
-            OPTIONAL MATCH (f2)-[:HAS_HOME_TEAM]->(ht:Team)
-            OPTIONAL MATCH (f2)-[:HAS_AWAY_TEAM]->(at:Team)
-            
-            WITH p, all_positions, seasons, total_points, total_goals, total_assists,
-                total_minutes, total_clean_sheets, total_bonus, total_appearances,
-                collect(DISTINCT COALESCE(ht.name, at.name)) AS teams
-            
-            RETURN p.player_name AS name,
-                all_positions AS positions,
-                teams,
-                seasons,
-                total_points,
-                total_goals,
-                total_assists,
-                total_minutes,
-                total_clean_sheets,
-                total_bonus,
-                total_appearances,
-                COALESCE(p.now_cost, 0) AS price
-            ORDER BY total_points DESC
-            {limit_clause}
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
+        OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+        
+        WITH p, f.season AS season,
+            collect(DISTINCT pos.name) AS all_positions,
+            sum(COALESCE(r.total_points, 0)) AS total_points,
+            sum(COALESCE(r.goals_scored, 0)) AS total_goals,
+            sum(COALESCE(r.assists, 0)) AS total_assists,
+            sum(COALESCE(r.clean_sheets, 0)) AS total_clean_sheets,
+            count(DISTINCT f) AS total_appearances
+        
+        OPTIONAL MATCH (p)-[:PLAYED_IN]->(f2:Fixture {{season: season}})
+        OPTIONAL MATCH (f2)-[:HAS_HOME_TEAM]->(ht:Team)
+        OPTIONAL MATCH (f2)-[:HAS_AWAY_TEAM]->(at:Team)
+        
+        WITH p, season, all_positions, total_points, total_goals, total_assists,
+            total_clean_sheets, total_appearances,
+            collect(DISTINCT COALESCE(ht.name, at.name)) AS teams
+        
+        WHERE total_points > 0
+        
+        RETURN p.player_name AS name,
+            season,  // ← Include season
+            all_positions AS positions,
+            teams,
+            total_points,
+            total_goals,
+            total_assists,
+            total_clean_sheets,
+            total_appearances,
+            COALESCE(p.now_cost, 0) AS price
+        ORDER BY total_points DESC
+        {limit_clause}
         """
 
         print("📊 Fetching players from Neo4j...")
