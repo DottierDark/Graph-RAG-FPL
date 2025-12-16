@@ -80,10 +80,18 @@ class SessionStateManager:
             SessionStateManager._initialize_llm()
     
     @staticmethod
-    def _initialize_retriever():
+    def _initialize_retriever(default_model: str = "all-MiniLM-L6-v2"):
         """Initialize graph retriever with FAISS vector store using centralized config"""
         try:
             uri, username, password = TokenManager.get_neo4j_credentials()
+            
+            # DEBUG: Print connection details
+            print("=" * 60)
+            print("🔍 DEBUG: Neo4j Connection Initialization")
+            print(f"   URI: {uri}")
+            print(f"   Username: {username}")
+            print(f"   Password: {'*' * len(password) if password else 'None'}")
+            print("=" * 60)
             
             # List of embedding models to initialize
             embedding_models_to_init = [
@@ -95,12 +103,14 @@ class SessionStateManager:
             for model_name in embedding_models_to_init:
                 temp_retriever = None
                 try:
+                    print(f"🔄 Attempting to create retriever for {model_name}...")
                     temp_retriever = FPLGraphRetriever(
                         uri=uri,
                         username=username,
                         password=password,
                         embedding_model_name=model_name
                     )
+                    print(f"✅ Retriever created successfully for {model_name}")
                     
                     if not temp_retriever.is_embeddings_ready():
                         model_short_name = model_name.split("/")[1]
@@ -112,26 +122,46 @@ class SessionStateManager:
                                 player_count = temp_retriever.create_node_embeddings()
                                 st.success(f"✅ Successfully created embeddings for {model_short_name} ({player_count} players)!")
                             except Exception as build_error:
+                                print(f"❌ ERROR building embeddings: {str(build_error)}")
                                 st.error(f"❌ Failed to build embeddings for {model_short_name}: {str(build_error)}")
+                    else:
+                        print(f"✅ Embeddings already cached for {model_name}")
+                except Exception as retriever_error:
+                    print(f"❌ ERROR creating retriever for {model_name}: {str(retriever_error)}")
+                    print(f"   Error type: {type(retriever_error).__name__}")
+                    import traceback
+                    print(f"   Traceback:\n{traceback.format_exc()}")
+                    raise
                 finally:
                     # Always close the temporary retriever connection
                     if temp_retriever is not None:
+                        print(f"🔒 Closing connection for {model_name}")
                         temp_retriever.close()
             
             # Initialize retriever with the default selected model
-            full_model_name = f"sentence-transformers/{embedding_model}"
+            full_model_name = f"sentence-transformers/{default_model}"
+            print(f"🔄 Creating final retriever with model: {full_model_name}")
             st.session_state.retriever = FPLGraphRetriever(
                 uri=uri,
                 username=username,
                 password=password,
                 embedding_model_name=full_model_name
             )
+            print("✅ Final retriever created successfully")
             
             # Check if embeddings are ready for the selected model
             embeddings_ready = st.session_state.retriever.is_embeddings_ready()
             st.session_state.embeddings_loaded = embeddings_ready
+            print(f"📊 Embeddings ready: {embeddings_ready}")
             
         except Exception as e:
+            print("=" * 60)
+            print(f"❌ CRITICAL ERROR in _initialize_retriever:")
+            print(f"   Error: {str(e)}")
+            print(f"   Error type: {type(e).__name__}")
+            import traceback
+            print(f"   Full traceback:\n{traceback.format_exc()}")
+            print("=" * 60)
             st.error(f"{ERROR_MESSAGES['neo4j_connection_failed']}: {str(e)}")
             st.session_state.retriever = None
             st.session_state.embeddings_loaded = False

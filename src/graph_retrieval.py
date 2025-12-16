@@ -56,10 +56,35 @@ class FPLGraphRetriever:
         self.username = username or neo4j_config["username"]
         self.password = password or neo4j_config["password"]
 
+        # DEBUG: Print connection details
+        print("=" * 60)
+        print("🔍 DEBUG: Neo4j Driver Initialization")
+        print(f"   URI: {self.uri}")
+        print(f"   Username: {self.username}")
+        print(f"   Password: {'*' * len(self.password) if self.password else 'None'}")
+        print("=" * 60)
+
         # Initialize Neo4j driver
-        self.driver = GraphDatabase.driver(
-            self.uri, auth=(self.username, self.password)
-        )
+        try:
+            print(f"🔄 Attempting to create Neo4j driver...")
+            self.driver = GraphDatabase.driver(
+                self.uri, auth=(self.username, self.password)
+            )
+            print(f"✅ Neo4j driver created successfully")
+            
+            # Test connection
+            print(f"🔄 Testing Neo4j connection...")
+            with self.driver.session() as session:
+                result = session.run("RETURN 1 as test")
+                test_value = result.single()["test"]
+                print(f"✅ Neo4j connection test passed (returned: {test_value})")
+        except Exception as driver_error:
+            print(f"❌ ERROR creating/testing Neo4j driver:")
+            print(f"   Error: {str(driver_error)}")
+            print(f"   Error type: {type(driver_error).__name__}")
+            import traceback
+            print(f"   Traceback:\n{traceback.format_exc()}")
+            raise
 
         # Initialize embedding model using config
         self.embedding_model_name = embedding_model_name or get_embedding_model()
