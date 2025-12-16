@@ -22,7 +22,8 @@ from .config import (
 load_dotenv()
 
 
-# ========== Token Management (adapted from app.py) ==========
+# ==================== TOKEN MANAGEMENT ====================
+
 class TokenManager:
     """Responsible for managing and loading API tokens"""
     
@@ -61,7 +62,8 @@ class TokenManager:
         )
 
 
-# ========== Session State Manager (adapted from app.py) ==========
+# ==================== SESSION STATE MANAGEMENT ====================
+
 class SessionStateManager:
     """Responsible for managing Streamlit session state"""
     
@@ -147,7 +149,8 @@ class SessionStateManager:
         st.session_state.messages = []
 
 
-# ========== UI Configuration (adapted from app.py) ==========
+# ==================== UI CONFIGURATION ====================
+
 class UIConfigurator:
     """Responsible for configuring Streamlit UI"""
     
@@ -167,32 +170,8 @@ class UIConfigurator:
         st.markdown(STREAMLIT_CONFIG['description'])
 
 
-# ========== Message Display (adapted from app.py) ==========
-class MessageDisplayer:
-    """Responsible for displaying messages"""
-    
-    @staticmethod
-    def show_error(message: str):
-        """Display error message"""
-        st.error(f"❌ {message}")
-    
-    @staticmethod
-    def show_success(message: str):
-        """Display success message"""
-        st.success(f"✅ {message}")
-    
-    @staticmethod
-    def show_info(message: str):
-        """Display info message"""
-        st.info(f"ℹ️ {message}")
-    
-    @staticmethod
-    def show_warning(message: str):
-        """Display warning message"""
-        st.warning(f"⚠️ {message}")
-
-
-# ========== Query Processor (SOLID: Single Responsibility) ==========
+# ========== Query Processor ==========
+# Processes user queries through the complete RAG pipeline
 class QueryProcessor:
     """Responsible for processing FPL queries through the RAG pipeline"""
     
@@ -223,6 +202,7 @@ class QueryProcessor:
                 )
                 results["metadata"]["query_type"] = baseline_results.get('query_type', 'N/A')
                 results["metadata"]["results_count"] = len(baseline_results.get('data', []))
+                results["metadata"]["cypher_query"] = baseline_results.get('cypher_query', 'N/A')  # Store executed query
             
             if retrieval_method in ["Embedding-based", "Hybrid (Both)"]:
                 # Check if embeddings are ready before attempting retrieval
@@ -231,10 +211,12 @@ class QueryProcessor:
                     results["metadata"]["semantic_matches"] = 0
                     return results
                 
-                # Use integrated FAISS-based embedding retrieval
+                # Use integrated FAISS-based embedding retrieval with entity filtering
                 embedding_results = retriever.embedding_retrieval(
                     preprocessed['embedding'],
-                    top_k=5
+                    entities=preprocessed['entities'],  # Pass entities for filtering
+                    top_k=15,  # Increased to leverage full dataset
+                    min_similarity=0.3  # Configurable similarity threshold
                 )
                 results["metadata"]["semantic_matches"] = len(embedding_results.get('data', []))
             
@@ -251,16 +233,26 @@ class QueryProcessor:
             results["metadata"]["model"] = response.get('model', selected_model)
             results["metadata"]["response_time"] = response.get('response_time', 0)
             results["metadata"]["retrieval_method"] = retrieval_method
-            results["metadata"]["baseline_data"] = baseline_results.get('data', [])[:3] if baseline_results else []
-            results["metadata"]["embedding_data"] = embedding_results.get('data', [])[:3] if embedding_results and embedding_results.get('data') else []
+            
+            # Store retrieved data for UI display
+            if baseline_results and baseline_results.get('data'):
+                results["metadata"]["baseline_data"] = baseline_results['data']  # First 3 for preview
+            
+            if embedding_results and embedding_results.get('data'):
+                results["metadata"]["embedding_data"] = embedding_results['data']  # First 3 for preview
             
         except Exception as e:
-            results["error"] = str(e)
+            results["error"] = f"Error processing query: {str(e)}"
+            results["success"] = False
+            print(f"❌ QueryProcessor error: {e}")
+            import traceback
+            traceback.print_exc()
         
         return results
 
 
-# ========== Main Application Function ==========
+# ==================== MAIN APPLICATION ====================
+
 def main():
     """Main function to run the Streamlit application"""
     # Page configuration
@@ -431,10 +423,14 @@ def main():
     # Model selection
     selected_model = st.sidebar.selectbox(
         "Select LLM Model",
-        ["gemma-2b", "mistral-7b", "llama-2-7b", "gpt-3.5-turbo", "rule-based-fallback"],
+        ["gemma-2b", "mistral-7b", "phi-2", "llama-2-7b", "gpt-3.5-turbo", "rule-based-fallback"],
         index=0,  # Default to gemma-2b (FREE via HuggingFace)
-        help="Gemma & Mistral use free HuggingFace API. GPT requires OpenAI API key (paid)."
+        help="Gemma, Mistral & Phi use free HuggingFace API. LLaMA-2 requires license acceptance. GPT requires OpenAI API key (paid)."
     )
+    
+    # Show warning for LLaMA-2
+    if selected_model == "llama-2-7b":
+        st.sidebar.warning("⚠️ LLaMA-2 requires accepting the license at [HuggingFace](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf). Use Gemma or Mistral as free alternatives.")
 
     # Embedding model selection
     embedding_model = st.sidebar.selectbox(
@@ -578,25 +574,100 @@ def main():
                         # Add to chat history
                         SessionStateManager.add_message("assistant", results["answer"], results["metadata"])
                         
-                        # Show detailed view in expander
-                        with st.expander("📊 View Retrieved Data"):
-                            col1, col2 = st.columns(2)
+                        # Show detailed view in expander - ENHANCED
+                        with st.expander("📊 View Retrieved Knowledge Graph Context", expanded=True):
+                            st.markdown("### 🔍 Raw KG Data Retrieved (Before LLM Processing)")
+                            st.markdown("This shows the actual information retrieved from the knowledge graph.")
+                            
+                            # Metrics row
+                            col1, col2, col3 = st.columns(3)
                             
                             with col1:
                                 st.metric("Query Type", results['metadata'].get('query_type', 'N/A'))
-                                st.metric("Results Found", results['metadata'].get('results_count', 0))
+                                st.metric("Retrieval Method", results['metadata'].get('retrieval_method', 'N/A'))
                             
                             with col2:
+                                st.metric("Cypher Results", results['metadata'].get('results_count', 0))
+                                st.metric("Semantic Matches", results['metadata'].get('semantic_matches', 0))
+                            
+                            with col3:
                                 st.metric("Response Time", f"{results['metadata'].get('response_time', 0):.2f}s")
-                                st.metric("Model", results['metadata'].get('model', 'N/A'))
+                                st.metric("Model Used", results['metadata'].get('model', 'N/A')[:20])
                             
+                            st.markdown("---")
+                            
+                            # Cypher Query Display
+                            if results['metadata'].get('cypher_query') and results['metadata']['cypher_query'] != 'N/A':
+                                st.markdown("### 🔍 Executed Cypher Query")
+                                st.markdown("This is the actual Cypher query executed against Neo4j:")
+                                st.code(results['metadata']['cypher_query'], language="cypher")
+                                st.markdown("---")
+                            
+                            # Baseline (Cypher) Results
                             if results['metadata'].get('baseline_data'):
-                                st.markdown("**🔍 Cypher Query Results:**")
-                                st.json(results['metadata']['baseline_data'])
+                                st.markdown("### 🔗 Cypher Query Results (Structured Data)")
+                                st.markdown("Direct retrieval from Neo4j using graph queries:")
+                                
+                                # Show as table for better readability
+                                import pandas as pd
+                                try:
+                                    df = pd.DataFrame(results['metadata']['baseline_data'])
+                                    st.dataframe(df, use_container_width=True)
+                                except:
+                                    st.json(results['metadata']['baseline_data'])
+                                
+                                st.markdown("---")
                             
+                            # Embedding (Semantic) Results
                             if results['metadata'].get('embedding_data'):
-                                st.markdown("**🧠 Semantic Search Results:**")
-                                st.json(results['metadata']['embedding_data'])
+                                st.markdown("### 🧠 Semantic Search Results (Vector Similarity)")
+                                st.markdown("Players found through embedding similarity (shows semantic relationships):")
+                                
+                                # Display with similarity scores highlighted
+                                for i, player in enumerate(results['metadata']['embedding_data'], 1):
+                                    similarity_pct = player.get('similarity', 0) * 100
+                                    col_a, col_b = st.columns([3, 1])
+                                    with col_a:
+                                        st.markdown(f"**{i}. {player.get('name', 'N/A')}** - {player.get('primary_position', 'N/A')}")
+                                        st.caption(f"Points: {player.get('total_points', 0)} | Goals: {player.get('total_goals', 0)} | Assists: {player.get('total_assists', 0)}")
+                                    with col_b:
+                                        st.metric("Match", f"{similarity_pct:.1f}%")
+                                
+                                st.markdown("---")
+                            
+                            # Player Recommendations (if available)
+                            if results['metadata'].get('query_type') in ['top_players_by_position', 'recommendation']:
+                                st.markdown("### ⭐ Player Recommendations")
+                                st.markdown("**Why these players?** Based on your query and KG data:")
+                                
+                                data = results['metadata'].get('baseline_data', [])
+                                if data:
+                                    for i, player in enumerate(data[:5], 1):
+                                        with st.container():
+                                            st.markdown(f"**{i}. {player.get('name', 'Unknown')}**")
+                                            
+                                            # Build explanation
+                                            explanation_parts = []
+                                            
+                                            if player.get('total_points'):
+                                                explanation_parts.append(f"✓ High total points: {player['total_points']}")
+                                            
+                                            if player.get('goals'):
+                                                explanation_parts.append(f"✓ Goals scored: {player['goals']}")
+                                            
+                                            if player.get('assists'):
+                                                explanation_parts.append(f"✓ Assists: {player['assists']}")
+                                            
+                                            if player.get('clean_sheets'):
+                                                explanation_parts.append(f"✓ Clean sheets: {player['clean_sheets']}")
+                                            
+                                            if player.get('position'):
+                                                explanation_parts.append(f"✓ Position: {player['position']}")
+                                            
+                                            st.markdown("\n".join(explanation_parts))
+                                            st.markdown("")
+                                
+                                st.markdown("---")
                     else:
                         error_msg = results.get("error") or "Unable to generate response."
                         st.error(error_msg)

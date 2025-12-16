@@ -53,6 +53,13 @@ LLM_MODELS = {
         "model_name": "meta-llama/Llama-2-7b-chat-hf",
         "temperature": 0.3,
         "max_tokens": 500,
+        "provider": "huggingface",
+        "requires_auth": True  # Requires accepting license on HuggingFace
+    },
+    "phi": {
+        "model_name": "microsoft/phi-2",
+        "temperature": 0.3,
+        "max_tokens": 500,
         "provider": "huggingface"
     }
 }
@@ -74,16 +81,27 @@ RETRIEVAL_LIMITS = {
     "default": 20,                # Default increased for large dataset
     "top_players_by_position": 20,
     "top_scorers": 20,
-    "best_performers_gameweek": 20
+    "best_performers_gameweek": 20,
+    # New queries
+    "total_gameweeks": 1,
+    "total_players": 1,
+    "teams_only_in_2021_22": 5,
+    "max_points_2022_23": 1,
+    "elneny_matches_participated": 1,
+    "highest_total_assists": 1,
+    "avg_points_by_position": 10,
+    "away_wins_3plus_goals_2022_23": 20,
+    "most_clean_sheets_2021_22": 1,
+    "goal_and_assist_same_fixture_2022_23": 50
 }
 
 # Similarity thresholds for embedding-based retrieval
-# Design Decision: 0.5 threshold filters out poor matches
+# Design Decision: Adjusted thresholds after query expansion improvements
 SIMILARITY_THRESHOLDS = {
-    "high_confidence": 0.8,   # Very similar
-    "medium_confidence": 0.6,  # Somewhat similar
-    "low_confidence": 0.5,     # Minimum acceptable
-    "default": 0.6
+    "high_confidence": 0.75,   # Very similar (increased from 0.8)
+    "medium_confidence": 0.55,  # Somewhat similar (decreased from 0.6)
+    "low_confidence": 0.40,     # Minimum acceptable (decreased from 0.5)
+    "default": 0.50            # Balanced threshold (decreased from 0.6)
 }
 
 # Cypher Query Templates (adapted for Milestone 2 schema)
@@ -95,8 +113,7 @@ CYPHER_QUERY_TEMPLATES = {
         OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
         WITH p, collect(DISTINCT pos.name) AS positions
         RETURN p.player_name AS name, 
-            positions AS positions,
-            p.season AS season
+            positions AS positions
         LIMIT 10
     """,
     "top_players_by_position": """
@@ -124,7 +141,6 @@ CYPHER_QUERY_TEMPLATES = {
              sum(r.clean_sheets) AS clean_sheets
         RETURN p.player_name AS name, 
                positions,
-               p.season AS season,
                total_points, goals, assists, minutes, clean_sheets
     """,
     "team_players": """
@@ -249,6 +265,90 @@ CYPHER_QUERY_TEMPLATES = {
                r.assists AS assists
         ORDER BY r.total_points DESC
         LIMIT 10
+    """,
+    # New queries from queries.txt
+    "total_gameweeks": """
+        MATCH (g:Gameweek)
+        RETURN count(g) AS total_gameweeks
+    """,
+    "total_players": """
+        MATCH (p:Player)
+        RETURN count(p) AS total_players
+    """,
+    "teams_only_in_2021_22": """
+        MATCH (f1:Fixture {season: '2021-22'})-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t:Team)
+        WITH collect(DISTINCT t.name) AS teams_2021_22
+        MATCH (f2:Fixture {season: '2022-23'})-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t2:Team)
+        WITH teams_2021_22, collect(DISTINCT t2.name) AS teams_2022_23
+        UNWIND teams_2021_22 AS team
+        WITH team, teams_2022_23
+        WHERE NOT team IN teams_2022_23
+        WITH team
+        ORDER BY team
+        RETURN collect(team) AS teams_only_in_2021_22
+    """,
+    "max_points_2022_23": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture {season: '2022-23'})
+        WITH p, r.total_points AS points
+        ORDER BY points DESC
+        LIMIT 1
+        RETURN points AS max_points, p.player_name AS player
+    """,
+    "elneny_matches_participated": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
+        WHERE p.player_name CONTAINS 'Elneny' OR p.player_name CONTAINS 'ElNeny' OR p.player_name = 'Mohamed Elneny'
+        WITH p, r, f
+        WHERE r.minutes > 0
+        RETURN count(DISTINCT f) AS matches_participated
+    """,
+    "highest_total_assists": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
+        WITH p.player_name AS player, sum(r.assists) AS total_assists
+        ORDER BY total_assists DESC
+        LIMIT 1
+        RETURN player, total_assists
+    """,
+    "avg_points_by_position": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
+        WITH p.position AS position, avg(r.total_points) AS avg_points_per_gw
+        ORDER BY avg_points_per_gw DESC
+        RETURN position, round(avg_points_per_gw * 100) / 100 AS avg_points
+    """,
+    "away_wins_3plus_goals_2022_23": """
+        MATCH (f:Fixture {season: '2022-23'})
+        WHERE f.team_a_score >= 3 AND f.team_a_score > f.team_h_score
+        MATCH (f)-[:HAS_HOME_TEAM]->(ht:Team)
+        MATCH (f)-[:HAS_AWAY_TEAM]->(at:Team)
+        RETURN f.gameweek AS gameweek,
+               ht.name AS home_team,
+               f.team_h_score AS home_score,
+               at.name AS away_team,
+               f.team_a_score AS away_score
+        ORDER BY f.team_a_score DESC, f.gameweek
+    """,
+    "most_clean_sheets_2021_22": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture {season: '2021-22'})
+        MATCH (p)-[:PLAYS_FOR]->(t:Team)
+        WHERE r.clean_sheets > 0 AND r.minutes > 0
+        WITH t.name AS team, sum(r.clean_sheets) AS total_clean_sheets
+        ORDER BY total_clean_sheets DESC
+        LIMIT 1
+        RETURN team, total_clean_sheets
+    """,
+    "goal_and_assist_same_fixture_2022_23": """
+        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture {season: '2022-23'})
+        WHERE r.goals_scored >= 1 AND r.assists >= 1
+        MATCH (f)-[:HAS_HOME_TEAM]->(ht:Team)
+        MATCH (f)-[:HAS_AWAY_TEAM]->(at:Team)
+        RETURN p.player_name AS player,
+               p.position AS position,
+               r.goals_scored AS goals,
+               r.assists AS assists,
+               r.total_points AS points,
+               f.gameweek AS gameweek,
+               ht.name AS home_team,
+               at.name AS away_team
+        ORDER BY r.total_points DESC
     """,
 }
 
@@ -500,6 +600,82 @@ def get_embedding_model(size="default"):
     return EMBEDDING_MODELS.get(size, EMBEDDING_MODELS["default"])
 
 
+def get_available_queries():
+    """
+    Get list of available Cypher queries with descriptions.
+    
+    Returns:
+        List of dicts with query info
+    """
+    query_descriptions = {
+        "player_search": "Search for players by name",
+        "top_players_by_position": "Get top performers by position",
+        "player_stats": "Get detailed player statistics",
+        "team_players": "Get all players from a team",
+        "player_comparison": "Compare multiple players",
+        "gameweek_performance": "Get player performance in specific gameweek",
+        "top_scorers": "Get top goal scorers by position",
+        "clean_sheet_leaders": "Get defenders/goalkeepers with most clean sheets",
+        "players_by_price": "Find players within price range",
+        "form_players": "Get players in best recent form",
+        "fixtures": "Get fixtures for a gameweek",
+        "best_performers_gameweek": "Get best performers in a gameweek"
+    }
+    
+    return [
+        {"name": key, "description": query_descriptions.get(key, "Query description")}
+        for key in CYPHER_QUERY_TEMPLATES.keys()
+    ]
+
+
+def get_query_count():
+    """
+    Get total number of available Cypher queries.
+    
+    Returns:
+        int: Number of queries
+    """
+    return len(CYPHER_QUERY_TEMPLATES)
+
+
+def get_available_queries():
+    """
+    Get list of all available Cypher query templates
+    
+    Returns:
+        list: List of query template names with descriptions
+    """
+    query_descriptions = {
+        "player_search": "Search for players by name",
+        "top_players_by_position": "Get top players filtered by position",
+        "player_stats": "Get detailed statistics for a specific player",
+        "team_players": "Get all players from a specific team",
+        "player_comparison": "Compare statistics between multiple players",
+        "gameweek_performance": "Get player performance for a specific gameweek",
+        "top_scorers": "Get top goal scorers by position",
+        "clean_sheet_leaders": "Get defenders/goalkeepers with most clean sheets",
+        "players_by_price": "Find players within a price range",
+        "form_players": "Get players with best recent form",
+        "fixtures": "Get fixtures for a specific gameweek",
+        "best_performers_gameweek": "Get best performing players in a gameweek"
+    }
+    
+    return [
+        {"name": name, "description": query_descriptions.get(name, "No description")}
+        for name in CYPHER_QUERY_TEMPLATES.keys()
+    ]
+
+
+def get_query_count():
+    """
+    Get total number of available Cypher queries
+    
+    Returns:
+        int: Number of query templates
+    """
+    return len(CYPHER_QUERY_TEMPLATES)
+
+
 # Configuration summary for debugging
 def print_config_summary():
     """Print configuration summary - useful for debugging"""
@@ -510,8 +686,12 @@ def print_config_summary():
     print(f"Default LLM: {DEFAULT_LLM}")
     print(f"Supported Intents: {len(INTENT_TYPES)}")
     print(f"Supported Entities: {len(ENTITY_TYPES)}")
-    print(f"Cypher Templates: {len(CYPHER_QUERY_TEMPLATES)}")
+    print(f"Cypher Templates: {get_query_count()}")
     print(f"Feature Flags: {sum(FEATURE_FLAGS.values())}/{len(FEATURE_FLAGS)} enabled")
+    print("=" * 60)
+    print("\nAvailable Cypher Queries:")
+    for query in get_available_queries():
+        print(f"  - {query['name']}: {query['description']}")
     print("=" * 60)
 
 

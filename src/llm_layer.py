@@ -49,6 +49,7 @@ class FPLLLMLayer:
             "mistral-7b": self._call_huggingface_inference,
             "gemma-2b": self._call_huggingface_inference,
             "llama-2-7b": self._call_huggingface_inference,
+            "phi-2": self._call_huggingface_inference,
         }
     
     def format_context(self, baseline_results: Dict, embedding_results: Dict = None) -> str:
@@ -247,6 +248,8 @@ class FPLLLMLayer:
             model_config = get_llm_config("gemma")
         elif model == "llama-2-7b":
             model_config = get_llm_config("llama")
+        elif model == "phi-2":
+            model_config = get_llm_config("phi")
         else:
             model_config = get_llm_config("mistral")  # default
         
@@ -255,17 +258,39 @@ class FPLLLMLayer:
         try:
             start_time = time.time()
             
-            # Use chat completion for instruction-tuned models with centralized config
-            response = self.hf_client.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                model=full_model,
-                max_tokens=model_config['max_tokens'],
-                temperature=model_config['temperature'],
-            )
+            # Special handling for LLaMA-2 (requires gated access)
+            if model == "llama-2-7b":
+                # LLaMA-2 requires accepting license on HuggingFace
+                # Try with text_generation as fallback
+                try:
+                    response = self.hf_client.chat_completion(
+                        messages=[{"role": "user", "content": prompt}],
+                        model=full_model,
+                        max_tokens=model_config['max_tokens'],
+                        temperature=model_config['temperature'],
+                    )
+                    answer = response.choices[0].message.content
+                except Exception as llama_error:
+                    # Fallback: Use text_generation endpoint
+                    response = self.hf_client.text_generation(
+                        prompt,
+                        model=full_model,
+                        max_new_tokens=model_config['max_tokens'],
+                        temperature=model_config['temperature'],
+                        return_full_text=False
+                    )
+                    answer = response if isinstance(response, str) else str(response)
+            else:
+                # Use chat completion for instruction-tuned models
+                response = self.hf_client.chat_completion(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=full_model,
+                    max_tokens=model_config['max_tokens'],
+                    temperature=model_config['temperature'],
+                )
+                answer = response.choices[0].message.content
             
             end_time = time.time()
-            
-            answer = response.choices[0].message.content
             
             # Extract answer after the ### ANSWER marker if present
             if "### ANSWER" in answer:
@@ -280,7 +305,7 @@ class FPLLLMLayer:
         
         except Exception as e:
             return {
-                "answer": f"{ERROR_MESSAGES['llm_call_failed']}: {str(e)}",
+                "answer": f"{ERROR_MESSAGES['llm_call_failed']}: {str(e)}. Note: LLaMA-2 requires accepting the license at https://huggingface.co/meta-llama/Llama-2-7b-chat-hf",
                 "model": full_model,
                 "error": True
             }

@@ -40,7 +40,7 @@ class FPLInputPreprocessor:
         
     def classify_intent(self, query: str) -> str:
         """
-        Classify user intent using rule-based approach
+        Classify user intent using rule-based approach with priority handling
         
         Args:
             query: User query string
@@ -49,6 +49,10 @@ class FPLInputPreprocessor:
             Detected intent
         """
         query_lower = query.lower()
+        
+        # Priority check for comparison queries (higher priority)
+        if any(keyword in query_lower for keyword in ["compare", "vs", "versus", "better", "difference between"]):
+            return "comparison"
         
         # Check each intent pattern
         intent_scores = {}
@@ -114,18 +118,26 @@ class FPLInputPreprocessor:
         # This is simplified - in production you'd use NER or match against known players
         words = query.split()
         potential_names = []
-        # Common query words to exclude from player names
+        # Common query words to exclude from player names (including intent keywords)
         excluded_words = ["what", "which", "show", "find", "get", "the", "who", "are", "is", 
-                         "top", "best", "how", "when", "where", "why", "can", "could", "would"]
+                         "top", "best", "how", "when", "where", "why", "can", "could", "would",
+                         "compare", "vs", "versus", "between", "and", "or", "with", "against"]
+        
         for i, word in enumerate(words):
             if word[0].isupper() and len(word) > 2:
-                # Check if it's not a common word
+                # Check if it's not a common word or intent keyword
                 if word.lower() not in excluded_words:
                     potential_names.append(word)
         
-        # Combine consecutive capitalized words as full names
+        # Split potential names by common separators to handle "Salah Son" -> ["Salah", "Son"]
+        # Don't combine all capitalized words into one name for comparison queries
         if potential_names:
-            entities["players"] = [" ".join(potential_names)]
+            # If there are multiple capitalized words, treat each as a separate player
+            if len(potential_names) > 1 and any(kw in query_lower for kw in ['compare', 'vs', 'versus']):
+                entities["players"] = potential_names
+            else:
+                # Otherwise combine consecutive words as full name
+                entities["players"] = [" ".join(potential_names)]
         
         # Extract team names using centralized team list
         for team in FPL_TEAMS:
@@ -136,7 +148,7 @@ class FPLInputPreprocessor:
     
     def embed_query(self, query: str) -> List[float]:
         """
-        Convert query to embedding vector
+        Convert query to embedding vector with query expansion for better matching.
         
         Args:
             query: User query string
@@ -144,8 +156,53 @@ class FPLInputPreprocessor:
         Returns:
             Embedding vector
         """
-        embedding = self.embedding_model.encode(query)
+        # Expand query with context to improve semantic similarity
+        expanded_query = self._expand_query(query)
+        
+        embedding = self.embedding_model.encode(expanded_query)
         return embedding.tolist()
+    
+    def _expand_query(self, query: str) -> str:
+        """
+        Expand query with FPL-specific context to improve embedding similarity.
+        This helps match user intent with detailed player descriptions.
+        
+        Args:
+            query: Original user query
+            
+        Returns:
+            Expanded query with additional context
+        """
+        query_lower = query.lower()
+        expanded = query
+        
+        # Add position context
+        if any(word in query_lower for word in ['forward', 'striker', 'fwd']):
+            expanded += " Forward striker attacking player who scores goals"
+        elif any(word in query_lower for word in ['midfielder', 'mid']):
+            expanded += " Midfielder midfield player who creates plays assists"
+        elif any(word in query_lower for word in ['defender', 'def', 'defence', 'defense']):
+            expanded += " Defender defensive player clean sheets"
+        elif any(word in query_lower for word in ['goalkeeper', 'keeper', 'gkp']):
+            expanded += " Goalkeeper keeper saves clean sheets"
+        
+        # Add performance context
+        if any(word in query_lower for word in ['best', 'top', 'elite']):
+            expanded += " high points excellent performance elite top-performing"
+        
+        if any(word in query_lower for word in ['scorer', 'goals', 'goal']):
+            expanded += " goals scored striker forward attacking"
+        
+        if any(word in query_lower for word in ['assist', 'creator', 'playmaker']):
+            expanded += " assists creative playmaker midfielder"
+        
+        if any(word in query_lower for word in ['value', 'budget', 'cheap', 'affordable']):
+            expanded += " price cost value budget-friendly affordable"
+        
+        # Add FPL context
+        expanded += " Fantasy Premier League FPL player performance statistics"
+        
+        return expanded
     
     def preprocess(self, query: str) -> Dict:
         """
@@ -166,6 +223,57 @@ class FPLInputPreprocessor:
             "intent": intent,
             "entities": entities,
             "embedding": embedding
+        }
+    
+    def analyze_query(self, query: str) -> Dict:
+        """
+        Perform detailed analysis of a query for error analysis and improvement.
+        
+        Args:
+            query: User query string
+            
+        Returns:
+            Detailed analysis with confidence scores and suggestions
+        """
+        result = self.preprocess(query)
+        
+        # Calculate confidence scores
+        query_lower = query.lower()
+        intent_scores = {}
+        for intent, keywords in self.intent_patterns.items():
+            score = sum(1 for keyword in keywords if keyword in query_lower)
+            if score > 0:
+                intent_scores[intent] = score
+        
+        # Analyze entity extraction quality
+        entity_confidence = {
+            "players": len(result["entities"]["players"]) > 0,
+            "teams": len(result["entities"]["teams"]) > 0,
+            "positions": len(result["entities"]["positions"]) > 0,
+            "seasons": len(result["entities"]["seasons"]) > 0,
+            "gameweeks": len(result["entities"]["gameweeks"]) > 0,
+            "statistics": len(result["entities"]["statistics"]) > 0
+        }
+        
+        # Generate suggestions for improvement
+        suggestions = []
+        if not any(entity_confidence.values()):
+            suggestions.append("Query lacks specific FPL entities. Try mentioning player names, positions, or teams.")
+        
+        if len(intent_scores) == 0:
+            suggestions.append("Intent unclear. Try using keywords like 'top', 'compare', 'stats', or 'recommend'.")
+        elif len(intent_scores) > 2:
+            suggestions.append("Multiple intents detected. Consider breaking into separate queries.")
+        
+        return {
+            **result,
+            "analysis": {
+                "intent_scores": intent_scores,
+                "entity_confidence": entity_confidence,
+                "entities_found": sum(1 for v in entity_confidence.values() if v),
+                "suggestions": suggestions,
+                "query_complexity": "simple" if len(query.split()) < 5 else "complex"
+            }
         }
 
 

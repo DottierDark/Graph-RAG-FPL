@@ -120,12 +120,19 @@ class FPLGraphRetriever:
                 result = session.run(query, params)
                 records = [dict(record) for record in result]
 
+                # Debug: Print query info
+                if not records:
+                    print(f"⚠️ Query '{query_type}' returned 0 results with params: {params}")
+                
                 # Apply centralized retrieval limits
                 limit = RETRIEVAL_LIMITS.get(query_type, RETRIEVAL_LIMITS["default"])
                 return records[:limit]
 
         except Exception as e:
-            print(f"Error executing query: {e}")
+            print(f"Error executing query '{query_type}': {e}")
+            print(f"Parameters: {params}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def execute_query(self, query_type: str, params: Dict[str, Any]) -> List[Dict]:
@@ -151,32 +158,47 @@ class FPLGraphRetriever:
             entities: Extracted entities
 
         Returns:
-            Retrieved information with method, intent, query_type, and data
+            Retrieved information with method, intent, query_type, cypher_query, and data
         """
-        results = {"method": "baseline", "intent": intent, "data": []}
+        results = {"method": "baseline", "intent": intent, "data": [], "cypher_query": None}
 
         # Default season - ensure it's in correct format (YYYY-YY)
         seasons = entities.get("seasons", ["2022-23"])
         season = seasons[0] if seasons else "2022-23"
+        
+        # Debug output
+        print(f"\n🔍 Query Routing: intent='{intent}', entities={entities}")
 
         # Route to appropriate query based on intent using helper method
         if intent == "player_search" and entities.get("players"):
             params = {"player_name": entities["players"][0]}
-            results["data"] = self._execute_query_safely("player_search", params)
-            results["query_type"] = "player_search"
+            query_type = "player_search"
+            results["data"] = self._execute_query_safely(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         elif intent == "player_performance" and entities.get("players"):
             params = {"player_name": entities["players"][0], "season": season}
-            results["data"] = self._execute_query_safely("player_stats", params)
-            results["query_type"] = "player_stats"
+            query_type = "player_stats"
+            results["data"] = self._execute_query_safely(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
+
+        elif intent == "player_search" and entities.get("players") and len(entities["players"]) == 1:
+            # Single player lookup (e.g., "show me player stats", "mohamed salah stats")
+            params = {"player_name": entities["players"][0], "season": season}
+            query_type = "player_stats"
+            results["data"] = self._execute_query_safely(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         elif intent == "recommendation" and entities.get("positions"):
             position = entities["positions"][0]
             params = {"position": position, "season": season}
-            results["data"] = self._execute_query_safely(
-                "top_players_by_position", params
-            )
-            results["query_type"] = "top_players_by_position"
+            query_type = "top_players_by_position"
+            results["data"] = self._execute_query_safely(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         elif (
             intent == "comparison"
@@ -184,25 +206,58 @@ class FPLGraphRetriever:
             and len(entities["players"]) >= 2
         ):
             params = {"player_names": entities["players"][:2], "season": season}
-            results["data"] = self._execute_query_safely("player_comparison", params)
-            results["query_type"] = "player_comparison"
+            query_type = "player_comparison"
+            results["data"] = self._execute_query_safely(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         elif intent == "team_analysis" and entities.get("teams"):
-            params = {"team_name": entities["teams"][0], "season": season}
-            results["data"] = self.execute_query("team_players", params)
-            results["query_type"] = "team_players"
+            team_name = entities["teams"][0]
+            # Check if query is specifically about clean sheets
+            if entities.get("statistics") and "clean_sheets" in entities["statistics"]:
+                # Custom query for team clean sheet leaders
+                query_type = "team_clean_sheets"
+                custom_query = """
+                    MATCH (p:Player)
+                    WHERE p.team = $team_name
+                    OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
+                    OPTIONAL MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+                    WHERE f.season = $season
+                    WITH p, pos, sum(r.clean_sheets) AS clean_sheets, sum(r.total_points) AS total_points
+                    RETURN p.player_name AS name,
+                           collect(DISTINCT pos.name) AS positions,
+                           clean_sheets, total_points
+                    ORDER BY clean_sheets DESC
+                    LIMIT 10
+                """
+                with self.driver.session() as session:
+                    result = session.run(custom_query, {"team_name": team_name, "season": season})
+                    results["data"] = [dict(record) for record in result]
+                results["query_type"] = query_type
+                results["cypher_query"] = custom_query
+            else:
+                # Regular team players query
+                params = {"team_name": team_name, "season": season}
+                query_type = "team_players"
+                results["data"] = self.execute_query(query_type, params)
+                results["query_type"] = query_type
+                results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         elif intent == "fixture" and entities.get("gameweeks"):
             gameweek = int(entities["gameweeks"][0])
             params = {"gameweek": gameweek, "season": season}
-            results["data"] = self.execute_query("best_performers_gameweek", params)
-            results["query_type"] = "best_performers_gameweek"
+            query_type = "best_performers_gameweek"
+            results["data"] = self.execute_query(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         else:
             # Default: show top scorers for forwards
             params = {"position": "FWD", "season": season}
-            results["data"] = self.execute_query("top_scorers", params)
-            results["query_type"] = "top_scorers"
+            query_type = "top_scorers"
+            results["data"] = self.execute_query(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         return results
 
@@ -308,48 +363,48 @@ class FPLGraphRetriever:
             clean_sheets = player.get("total_clean_sheets", 0) or 0
             appearances = player.get("total_appearances", 0) or 0
 
-            # CRITICAL: Create text with HEAVY position emphasis
-            # Position is mentioned 3-4 times to ensure strong embedding association
-
-            text = f"{player['name']} plays as a {position_full} ({primary_position}). "
-            text += f"He is a {primary_team} {position_full}. "
-
-            # Position-specific role description
-            if primary_position == "FWD":
-                text += f"As a forward and striker, {player['name']} is an attacking player. "
-                text += f"Forward {player['name']} scored {total_goals} goals "
-            elif primary_position == "MID":
-                text += f"As a midfielder, {player['name']} plays in midfield. "
-                text += f"Midfielder {player['name']} contributed {total_goals} goals "
-            elif primary_position == "DEF":
-                text += f"As a defender, {player['name']} plays in defense. "
-                text += f"Defender {player['name']} kept {clean_sheets} clean sheets and scored {total_goals} goals "
-            elif primary_position == "GKP":
-                text += (
-                    f"As a goalkeeper, {player['name']} is the {primary_team} keeper. "
-                )
-                text += f"Goalkeeper {player['name']} kept {clean_sheets} clean sheets "
-            else:
-                text += f"{player['name']} scored {total_goals} goals "
-
-            text += (
-                f"and provided {total_assists} assists in {appearances} appearances. "
-            )
-            text += f"Total FPL points: {total_points}. "
-
-            # Add performance level with position
+            # OPTIMIZED: Create focused, semantic-rich text representation
+            # Key improvement: Balance detail with semantic clarity
+            
+            # Start with core identity (position emphasized)
+            text = f"{player['name']} is a {position_full} ({primary_position}) "
+            
+            # Add performance level description (semantic keywords)
             if total_points > 200:
-                text += f"Elite {position_full}. "
+                text += "who is an elite top-tier world-class "
             elif total_points > 150:
-                text += f"Top-performing {position_full}. "
+                text += "who is a high-performing excellent top "
             elif total_points > 100:
-                text += f"Solid {position_full}. "
+                text += "who is a solid reliable consistent "
             else:
-                text += f"Rotation {position_full}. "
-
-            # Final position emphasis
+                text += "who is a rotation squad "
+            
+            # Position-specific semantic description
+            if primary_position == "FWD":
+                text += f"forward striker for {primary_team}. As an attacking player, "
+                text += f"he scored {total_goals} goals and provided {total_assists} assists. "
+                text += "Forward specialist in attacking, scoring goals, striker role. "
+            elif primary_position == "MID":
+                text += f"midfielder for {primary_team}. As a midfield player, "
+                text += f"he scored {total_goals} goals and provided {total_assists} assists. "
+                text += "Midfielder specialist in midfield, creating chances, playmaking. "
+            elif primary_position == "DEF":
+                text += f"defender for {primary_team}. As a defensive player, "
+                text += f"he kept {clean_sheets} clean sheets and contributed {total_goals} goals and {total_assists} assists. "
+                text += "Defender specialist in defense, clean sheets, protecting goal. "
+            elif primary_position == "GKP":
+                text += f"goalkeeper for {primary_team}. As the team keeper, "
+                text += f"he kept {clean_sheets} clean sheets with strong saves. "
+                text += "Goalkeeper specialist in goalkeeping, saving shots, clean sheets. "
+            else:
+                text += f"player for {primary_team} with {total_goals} goals and {total_assists} assists. "
+            
+            # Add FPL context with total points
+            text += f"Total Fantasy Premier League points: {total_points} in {appearances} matches. "
+            
+            # Final position emphasis for semantic matching
             text += f"Position: {primary_position} {position_full}."
-
+            
             texts.append(text)
 
             # Enhanced metadata
@@ -371,7 +426,7 @@ class FPLGraphRetriever:
             print(f"   {texts[0][:200]}...")
         print()
 
-        # Generate embeddings
+        # Generate embeddings with normalization for better similarity scores
         print("🔄 Generating embeddings...")
         try:
             embeddings = self.embedding_model.encode(
@@ -379,23 +434,23 @@ class FPLGraphRetriever:
                 batch_size=batch_size,
                 show_progress_bar=True,
                 convert_to_numpy=True,
-                normalize_embeddings=False,
+                normalize_embeddings=True,  # KEY: Normalize during encoding for cosine similarity
             )
             embeddings_np = embeddings.astype("float32")
-            print(f"✅ Generated {len(embeddings_np)} embeddings")
+            print(f"✅ Generated {len(embeddings_np)} embeddings ({embeddings_np.shape[1]}D, normalized)")
         except Exception as e:
             print(f"❌ Error generating embeddings: {e}")
             return 0
 
-        # Build FAISS index
+        # Build FAISS index with Inner Product (equivalent to cosine for normalized vectors)
         print("🏗️  Building FAISS index...")
         try:
             import faiss
 
-            faiss.normalize_L2(embeddings_np)
+            # For normalized vectors, Inner Product = Cosine Similarity
             self.index = faiss.IndexFlatIP(self.dimension)
             self.index.add(embeddings_np)
-            print(f"✅ FAISS index built: {self.index.ntotal} vectors")
+            print(f"✅ FAISS index built: {self.index.ntotal} vectors (using cosine similarity)")
         except Exception as e:
             print(f"❌ Error building index: {e}")
             return 0
@@ -436,13 +491,13 @@ class FPLGraphRetriever:
             import faiss
             import numpy as np
 
-            # Get the embedding vector
+            # Get the embedding vector and ensure proper normalization
             if isinstance(query_embedding, list):
                 query_emb = np.array([query_embedding], dtype="float32")
             else:
-                query_emb = query_embedding
+                query_emb = query_embedding.astype("float32") if hasattr(query_embedding, 'astype') else np.array([query_embedding], dtype="float32")
 
-            # Normalize
+            # Normalize query embedding for cosine similarity
             faiss.normalize_L2(query_emb)
 
             # Extract filters from entities (from input preprocessing)
@@ -462,8 +517,9 @@ class FPLGraphRetriever:
                     season_filter = seasons[0]
                     print(f"   📅 Filtering by season: {season_filter}")
 
-            # Search for similar embeddings
-            search_k = min(top_k * 5, len(self.player_metadata))
+            # Search with larger k to get more candidates before filtering
+            # This improves quality when filters are applied
+            search_k = min(top_k * 10, len(self.player_metadata))  # Increased multiplier for better results
             similarities, indices = self.index.search(query_emb, search_k)
 
             # Filter results based on entities
