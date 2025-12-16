@@ -145,15 +145,23 @@ class SessionStateManager:
         )
     
     @staticmethod
-    def check_embeddings_exist() -> bool:
-        """Check if embeddings are available in vector cache"""
-        # Always check the current state from the retriever
-        if st.session_state.get('retriever'):
-            embeddings_ready = st.session_state.retriever.is_embeddings_ready()
-            st.session_state.embeddings_exist = embeddings_ready
-            st.session_state.embeddings_loaded = embeddings_ready
-            return embeddings_ready
-        return False
+    def check_embeddings_exist(embedding_model: str = None) -> bool:
+        """Check if embeddings are available in vector cache by checking cache files directly"""
+        from pathlib import Path
+        
+        # If no model specified, check the current retriever
+        if embedding_model is None:
+            if st.session_state.get('retriever'):
+                embeddings_ready = st.session_state.retriever.is_embeddings_ready()
+                st.session_state.embeddings_exist = embeddings_ready
+                st.session_state.embeddings_loaded = embeddings_ready
+                return embeddings_ready
+            return False
+        
+        # Check cache files directly for the specified model
+        model_safe_name = f"sentence-transformers_{embedding_model}"
+        cache_path = Path("data") / "cache" / model_safe_name / "player_embeddings.faiss"
+        return cache_path.exists()
     
     @staticmethod
     def add_message(role: str, content: str, metadata: Dict[str, Any] = None):
@@ -473,7 +481,7 @@ def main():
         st.rerun()
 
     # Retrieval method
-    embeddings_available = SessionStateManager.check_embeddings_exist()
+    embeddings_available = SessionStateManager.check_embeddings_exist(embedding_model)
 
     retrieval_method = st.sidebar.radio(
         "Retrieval Method",
