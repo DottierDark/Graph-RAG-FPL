@@ -63,14 +63,18 @@ DEFAULT_LLM = "rule-based-fallback"
 
 # ==================== RETRIEVAL CONFIGURATION ====================
 # Number of results to return for different query types
+# Design Decision: Increased limits to better utilize the full dataset (1600 players, 52k+ relations)
 RETRIEVAL_LIMITS = {
-    "player_search": 10,         # Player name searches
-    "top_players": 15,            # Top performers lists
-    "team_players": 20,           # All players in a team
-    "comparison": 5,              # Player comparisons
-    "fixtures": 10,               # Upcoming fixtures
-    "embedding_search": 10,       # Semantic similarity results
-    "default": 10
+    "player_search": 20,         # Player name searches (show more matches)
+    "top_players": 20,            # Top performers lists (more comprehensive)
+    "team_players": 30,           # All players in a team (teams have many players)
+    "comparison": 10,             # Player comparisons (show more context)
+    "fixtures": 15,               # Upcoming fixtures
+    "embedding_search": 15,       # Semantic similarity results (leverage full index)
+    "default": 20,                # Default increased for large dataset
+    "top_players_by_position": 20,
+    "top_scorers": 20,
+    "best_performers_gameweek": 20
 }
 
 # Similarity thresholds for embedding-based retrieval

@@ -4,6 +4,12 @@
 
 An end-to-end Graph-RAG (Graph Retrieval-Augmented Generation) system for Fantasy Premier League (FPL) queries. This system combines symbolic reasoning (Neo4j Knowledge Graph) with statistical reasoning (LLMs) to provide accurate, grounded responses about FPL players and statistics.
 
+### 📊 Dataset Scale
+- **1,600+ Players** indexed with full stats
+- **52,000+ Relationships** (PLAYED_IN, PLAYS_AS, HAS_HOME_TEAM, HAS_AWAY_TEAM)
+- **Complete 2022-23 FPL Season** coverage
+- **Optimized for large-scale retrieval** with FAISS vector indexing
+
 ### Team Members & Component Responsibilities
 - **Member 1**: Input Preprocessing (intent classification, entity extraction)
 - **Member 2**: Graph Retrieval Layer (Cypher queries, embeddings)
@@ -128,7 +134,7 @@ retriever.create_node_embeddings()
 
 **Option A: Streamlit UI (Recommended)**
 ```bash
-streamlit run streamlit_app.py
+streamlit run app.py
 ```
 
 **Option B: Command Line**

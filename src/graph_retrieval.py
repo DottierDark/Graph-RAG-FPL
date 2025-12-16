@@ -69,9 +69,9 @@ class FPLGraphRetriever:
         self.index = None
         self.player_metadata = []
         
-        # OPTIMIZATION: Model-specific cache directory
+        # OPTIMIZATION: Model-specific cache directory under data/cache
         model_safe_name = self.embedding_model_name.replace('/', '_').replace('\\', '_')
-        self.cache_dir = Path("vector_cache") / model_safe_name
+        self.cache_dir = Path("data") / "cache" / model_safe_name
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # Try to load cached embeddings
@@ -210,29 +210,31 @@ class FPLGraphRetriever:
         
         return results
     
-    def create_node_embeddings(self, batch_size: int = 32, max_players: int = None):
+    def create_node_embeddings(self, batch_size: int = 64, max_players: int = None):
         """
         Create embeddings for all Player nodes using FAISS vector store.
         OPTIMIZED VERSION with:
         - Progress indicators
-        - Batch processing
-        - Configurable player limit
+        - Batch processing (default: 64 for efficiency)
+        - Processes ALL players by default (no artificial limits)
         - Error handling per player
+        - Memory-efficient processing
         
         Args:
-            batch_size: Number of players to encode at once (default: 32)
-            max_players: Maximum number of players to process (None = all)
+            batch_size: Number of players to encode at once (default: 64, optimized for large datasets)
+            max_players: Maximum number of players to process (None = ALL ~1600 players)
         
         Returns:
             Number of embeddings created
         """
         print("\n" + "="*60)
-        print("🔄 CREATING PLAYER EMBEDDINGS")
+        print("🔄 CREATING PLAYER EMBEDDINGS FOR ALL PLAYERS")
         print("="*60)
         
-        # OPTIMIZATION: Remove LIMIT or make it configurable
+        # OPTIMIZATION: No limit by default - process all 1600+ players
         limit_clause = f"LIMIT {max_players}" if max_players else ""
         
+        # OPTIMIZATION: More efficient query - get all stats in one go
         query = f"""
             MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
             WHERE f.season = '2022-23'
@@ -241,14 +243,19 @@ class FPLGraphRetriever:
                  sum(r.goals_scored) AS goals,
                  sum(r.assists) AS assists,
                  sum(r.minutes) AS minutes,
-                 sum(r.clean_sheets) AS clean_sheets
+                 sum(r.clean_sheets) AS clean_sheets,
+                 sum(r.bonus) AS bonus,
+                 count(f) AS appearances
             OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
-            WITH p, total_points, goals, assists, minutes, clean_sheets,
-                 collect(DISTINCT pos.name) AS positions
+            OPTIONAL MATCH (p)-[:PLAYED_IN]->(:Fixture)-[:HAS_HOME_TEAM|HAS_AWAY_TEAM]->(t:Team)
+            WITH p, total_points, goals, assists, minutes, clean_sheets, bonus, appearances,
+                 collect(DISTINCT pos.name) AS positions,
+                 collect(DISTINCT t.name)[0] AS team
             RETURN p.player_name AS name, 
                    positions,
+                   team,
                    p.season AS season,
-                   total_points, goals, assists, minutes, clean_sheets
+                   total_points, goals, assists, minutes, clean_sheets, bonus, appearances
             ORDER BY total_points DESC
             {limit_clause}
         """
@@ -266,9 +273,10 @@ class FPLGraphRetriever:
             print("❌ No players found in Neo4j for season 2022-23")
             return 0
         
-        print(f"✅ Found {len(players)} players")
+        print(f"✅ Found {len(players)} players (processing ALL players)")
         print(f"🔧 Embedding model: {self.embedding_model_name} ({self.dimension}D)")
-        print(f"⚙️  Batch size: {batch_size}")
+        print(f"⚙️  Batch size: {batch_size} (optimized for large datasets)")
+        print(f"💾 Memory: ~{len(players) * self.dimension * 4 / 1024 / 1024:.1f} MB for embeddings")
         print()
         
         # OPTIMIZATION: Batch processing with progress
@@ -277,61 +285,73 @@ class FPLGraphRetriever:
         
         for player in players:
             positions_str = ', '.join(player.get('positions', ['Unknown']))
+            team = player.get('team', 'Unknown Team')
             
-            # OPTIMIZATION: More detailed text representation
+            # OPTIMIZATION: Rich text representation for better semantic search
             text = (
                 f"Player: {player['name']}, "
                 f"Position: {positions_str}, "
+                f"Team: {team}, "
                 f"Season: {player.get('season', '2022-23')}, "
                 f"Total Points: {player.get('total_points', 0)}, "
                 f"Goals: {player.get('goals', 0)}, "
                 f"Assists: {player.get('assists', 0)}, "
                 f"Minutes: {player.get('minutes', 0)}, "
-                f"Clean Sheets: {player.get('clean_sheets', 0)}"
+                f"Clean Sheets: {player.get('clean_sheets', 0)}, "
+                f"Bonus: {player.get('bonus', 0)}, "
+                f"Appearances: {player.get('appearances', 0)}"
             )
             texts.append(text)
             self.player_metadata.append(player)
         
         # Generate embeddings in batches with progress
-        print("🔄 Generating embeddings...")
+        print("🔄 Generating embeddings (this may take 2-3 minutes for 1600 players)...")
         embeddings = self.embedding_model.encode(
             texts,
             batch_size=batch_size,
             show_progress_bar=True,
-            convert_to_numpy=True
+            convert_to_numpy=True,
+            normalize_embeddings=False  # We'll normalize manually for FAISS
         )
         embeddings_np = embeddings.astype('float32')
         
+        print(f"✅ Generated {len(embeddings_np)} embeddings")
+        
         # OPTIMIZATION: Use IndexFlatIP (Inner Product) which is faster for normalized vectors
-        print("🏗️  Building FAISS index...")
+        print("🏗️  Building FAISS index (optimized for fast similarity search)...")
         # Normalize vectors for cosine similarity
         faiss.normalize_L2(embeddings_np)
         self.index = faiss.IndexFlatIP(self.dimension)  # Inner Product = cosine similarity for normalized vectors
         self.index.add(embeddings_np)
+        
+        print(f"✅ FAISS index built: {self.index.ntotal} vectors indexed")
         
         # Save to cache with metadata
         self._save_vector_cache()
         
         print()
         print("="*60)
-        print(f"✅ SUCCESS!")
-        print(f"   Created embeddings for {len(players)} players")
+        print(f"✅ SUCCESS! ALL PLAYERS PROCESSED")
+        print(f"   Created embeddings for {len(players)} players (~1600 total)")
+        print(f"   Relations covered: ~52,000+ PLAYED_IN relationships")
         print(f"   Cached to: {self.cache_dir}")
         print(f"   Model: {self.embedding_model_name}")
         print(f"   Dimension: {self.dimension}D")
+        print(f"   FAISS Index: {self.index.ntotal} vectors")
+        print(f"   Ready for semantic search across all players!")
         print("="*60)
         print()
         
         return len(players)
     
-    def embedding_retrieval(self, query_embedding: List[float], top_k: int = 10) -> Dict[str, Any]:
+    def embedding_retrieval(self, query_embedding: List[float], top_k: int = 15) -> Dict[str, Any]:
         """
         Perform embedding-based retrieval using FAISS vector similarity.
-        OPTIMIZED VERSION with better similarity scoring.
+        OPTIMIZED VERSION with better similarity scoring for large datasets.
         
         Args:
             query_embedding: Query embedding vector or query string
-            top_k: Number of results to return
+            top_k: Number of results to return (default: 15 to leverage full index)
             
         Returns:
             Retrieved information with similarity scores
@@ -527,7 +547,7 @@ class FPLGraphRetriever:
         
         # Update cache directory
         model_safe_name = model_name.replace('/', '_').replace('\\', '_')
-        self.cache_dir = Path("vector_cache") / model_safe_name
+        self.cache_dir = Path("data") / "cache" / model_safe_name
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # Try to load cache

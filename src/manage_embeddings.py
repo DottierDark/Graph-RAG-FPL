@@ -48,11 +48,14 @@ class EmbeddingManager:
         )
         print("✅ Connected to Neo4j")
     
-    def create_embeddings(self, batch_size=32, max_players=None):
-        """Create embeddings for all players"""
+    def create_embeddings(self, batch_size=64, max_players=None):
+        """Create embeddings for all players (default: ALL ~1600 players)"""
         print("\n" + "="*60)
-        print("CREATE EMBEDDINGS")
+        print("CREATE EMBEDDINGS FOR FULL DATASET")
         print("="*60)
+        print(f"Processing: {'ALL ~1600 players' if not max_players else f'{max_players} players'}")
+        print(f"Batch size: {batch_size} (optimized for large dataset)")
+        print()
         
         count = self.retriever.create_node_embeddings(
             batch_size=batch_size,
@@ -146,7 +149,7 @@ class EmbeddingManager:
             print("✅ Cache cleared successfully")
         else:
             # Manual cleanup for basic retriever
-            cache_dir = Path("vector_cache")
+            cache_dir = Path("data/cache")
             if cache_dir.exists():
                 import shutil
                 shutil.rmtree(cache_dir)

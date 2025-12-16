@@ -3,3 +3,5 @@ __pycache__/
 .env
 .vscode/
 venv/
+vector_cache/
+data/
