@@ -172,14 +172,7 @@ class FPLGraphRetriever:
         print(f"🔍 Original query: '{query}'")
 
         # Route to appropriate query based on intent using helper method
-        if intent == "player_search" and entities.get("players"):
-            params = {"player_name": entities["players"][0]}
-            query_type = "player_search"
-            results["data"] = self._execute_query_safely(query_type, params)
-            results["query_type"] = query_type
-            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
-
-        elif intent == "player_performance" and entities.get("players"):
+        if intent == "player_performance" and entities.get("players"):
             params = {"player_name": entities["players"][0], "season": season}
             query_type = "player_stats"
             results["data"] = self._execute_query_safely(query_type, params)
@@ -187,9 +180,17 @@ class FPLGraphRetriever:
             results["cypher_query"] = self.query_templates.get(query_type, "N/A")
 
         elif intent == "player_search" and entities.get("players") and len(entities["players"]) == 1:
-            # Single player lookup (e.g., "show me player stats", "mohamed salah stats")
+            # Single player lookup - use stats query for detailed info
             params = {"player_name": entities["players"][0], "season": season}
             query_type = "player_stats"
+            results["data"] = self._execute_query_safely(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
+        
+        elif intent == "player_search" and entities.get("players"):
+            # Multiple players or just basic search
+            params = {"player_name": entities["players"][0]}
+            query_type = "player_search"
             results["data"] = self._execute_query_safely(query_type, params)
             results["query_type"] = query_type
             results["cypher_query"] = self.query_templates.get(query_type, "N/A")

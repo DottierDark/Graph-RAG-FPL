@@ -170,7 +170,9 @@ class FPLInputPreprocessor:
         # Extract PERSON entities
         for ent in doc.ents:
             if ent.label_ == "PERSON":
-                players.append(ent.text)
+                # Remove possessive 's from player names
+                clean_name = ent.text.rstrip("'s").rstrip("'")
+                players.append(clean_name)
         
         # If no PERSON entities found, fall back to basic extraction
         if not players:
@@ -199,11 +201,13 @@ class FPLInputPreprocessor:
         potential_names = []
         
         for word in words:
+            # Remove possessive 's from words
+            clean_word = word.rstrip("'s").rstrip("'")
             # Check if word starts with uppercase and is not excluded
-            if len(word) > 2 and word[0].isupper() and word.lower() not in excluded_words:
+            if len(clean_word) > 2 and clean_word[0].isupper() and clean_word.lower() not in excluded_words:
                 # Also check it's not a team name
-                if word not in FPL_TEAMS:
-                    potential_names.append(word)
+                if clean_word not in FPL_TEAMS:
+                    potential_names.append(clean_word)
         
         # If comparison query, treat each capitalized word as separate player
         query_lower = query.lower()

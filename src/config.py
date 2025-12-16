@@ -123,7 +123,11 @@ CYPHER_QUERY_TEMPLATES = {
         ORDER BY total_points DESC
     """,
     "player_stats": """
-        MATCH (p:Player {player_name: $player_name})
+        MATCH (p:Player)
+        WHERE toLower(p.player_name) CONTAINS toLower($player_name)
+        WITH p
+        ORDER BY size(p.player_name) ASC
+        LIMIT 1
         OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
         OPTIONAL MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
         WHERE f.season = $season
@@ -150,8 +154,14 @@ CYPHER_QUERY_TEMPLATES = {
         ORDER BY total_points DESC
     """,
     "player_comparison": """
+        UNWIND $player_names AS search_name
         MATCH (p:Player)
-        WHERE p.player_name IN $player_names
+        WHERE toLower(p.player_name) CONTAINS toLower(search_name)
+        WITH search_name, p
+        ORDER BY size(p.player_name) ASC
+        WITH search_name, collect(p)[0] AS matched_player
+        WITH collect(matched_player) AS players
+        UNWIND players AS p
         MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
         WHERE f.season = $season
         WITH p, sum(r.total_points) AS total_points,
@@ -423,11 +433,11 @@ EXAMPLE_QUERIES = [
     "Who are the top forwards in 2022-23?",
     "Show me Erling Haaland's stats",
     "Best midfielders under 8 million",
-    "Compare Salah and Son performance",
-    "Arsenal players with most clean sheets",
+    # "Compare Salah and Son performance",
+    # "Arsenal players with most clean sheets",
     "Top scorers in gameweek 10",
     "Which defenders have the best value?",
-    "Liverpool's upcoming fixtures",
+    # "Liverpool's upcoming fixtures",
     "How many gameweeks were played during the seasons?",
     "How many player nodes were created?",
     "What teams were in 2021-22 but not 2022-23?",
@@ -455,7 +465,11 @@ PROMPT_TEMPLATE = """### PERSONA
 
 ### TASK
 Answer the following user question using ONLY the information provided in the context above.
-If the context doesn't contain enough information to answer the question, say so.
+
+CRITICAL RULES:
+3. NEVER make up statistics, player names, or any data not present in the context.
+4. Only cite statistics that appear in the context above.
+
 Be concise and specific, citing relevant statistics from the context.
 
 ### USER QUESTION

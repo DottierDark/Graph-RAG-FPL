@@ -65,23 +65,38 @@ class FPLLLMLayer:
         """
         context_parts = []
         
-        # Add baseline results
+        # Add baseline results - just the data without extra wrapper
         if baseline_results and baseline_results.get("data"):
-            context_parts.append("=== Cypher Query Results ===")
-            
-            for item in baseline_results["data"][:5]:  # Limit to top 5
-                item_str = ", ".join([f"{k}: {v}" for k, v in item.items()])
-                context_parts.append(f"- {item_str}")
+            for i, item in enumerate(baseline_results["data"][:10], 1):
+                # Format each field, handling nested structures
+                formatted_fields = []
+                for k, v in item.items():
+                    if k == "fixture_details":
+                        # Skip detailed fixture list, just mention it exists
+                        formatted_fields.append(f"{k}: [{len(v) if isinstance(v, list) else 0} fixtures]")
+                    elif isinstance(v, list) and len(v) > 10:
+                        # For long lists, just show count
+                        formatted_fields.append(f"{k}: [{len(v)} items]")
+                    else:
+                        formatted_fields.append(f"{k}: {v}")
+                
+                item_str = ", ".join(formatted_fields)
+                context_parts.append(f"{i}. {item_str}")
         
         # Add embedding results
         if embedding_results and embedding_results.get("data"):
-            context_parts.append("\n=== Similar Players (Semantic Search) ===")
+            if context_parts:
+                context_parts.append("\nAdditional similar results from semantic search:")
             
-            for item in embedding_results["data"][:5]:
+            for i, item in enumerate(embedding_results["data"][:5], 1):
                 item_copy = item.copy()
                 similarity = item_copy.pop("similarity", 0)
                 item_str = ", ".join([f"{k}: {v}" for k, v in item_copy.items()])
-                context_parts.append(f"- {item_str} (similarity: {similarity:.3f})")
+                context_parts.append(f"{i}. {item_str} (similarity: {similarity:.3f})")
+        
+        # Return joined context or "NO DATA FOUND" message
+        if not context_parts:
+            return "NO DATA FOUND IN DATABASE. The query returned 0 results."
         
         return "\n".join(context_parts)
     
