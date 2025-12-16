@@ -198,7 +198,8 @@ class QueryProcessor:
             if retrieval_method in ["Baseline (Cypher)", "Hybrid (Both)"]:
                 baseline_results = retriever.baseline_retrieval(
                     preprocessed['intent'],
-                    preprocessed['entities']
+                    preprocessed['entities'],
+                    preprocessed['query']  # Pass the original query for database_stats routing
                 )
                 results["metadata"]["query_type"] = baseline_results.get('query_type', 'N/A')
                 results["metadata"]["results_count"] = len(baseline_results.get('data', []))

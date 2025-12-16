@@ -85,7 +85,7 @@ class FPLGraphRAG:
         if retrieval_method in ["baseline", "hybrid"]:
             print("Running Cypher queries...")
             baseline_results = self.retriever.baseline_retrieval(
-                preprocessed["intent"], preprocessed["entities"]
+                preprocessed["intent"], preprocessed["entities"], preprocessed["query"]
             )
             print(f"Cypher query type: {baseline_results.get('query_type', 'N/A')}")
             print(f"Results found: {len(baseline_results.get('data', []))}")
@@ -174,7 +174,7 @@ class FPLGraphRAG:
         # Preprocess once
         preprocessed = self.preprocessor.preprocess(test_query)
         baseline_results = self.retriever.baseline_retrieval(
-            preprocessed["intent"], preprocessed["entities"]
+            preprocessed["intent"], preprocessed["entities"], preprocessed["query"]
         )
 
         # Compare models

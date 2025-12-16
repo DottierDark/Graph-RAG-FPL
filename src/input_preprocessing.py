@@ -66,6 +66,16 @@ class FPLInputPreprocessor:
         """
         query_lower = query.lower()
         
+        # Priority check for rule_query (highest priority - specific pattern)
+        if any(keyword in query_lower for keyword in ["two positions", "dual position", "multiple positions", "plays as defender"]):
+            return "rule_query"
+        
+        # Priority check for database_stats (database analytical queries)
+        if any(keyword in query_lower for keyword in ["how many gameweek", "total gameweek", "how many player", "player nodes", 
+                                                       "teams were", "teams only", "max points", "biggest points", "highest points",
+                                                       "elneny", "participated in"]):
+            return "database_stats"
+        
         # Priority check for comparison queries (higher priority)
         if any(keyword in query_lower for keyword in ["compare", "vs", "versus", "better", "difference between"]):
             return "comparison"

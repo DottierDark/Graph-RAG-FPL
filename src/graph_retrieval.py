@@ -148,7 +148,7 @@ class FPLGraphRetriever:
         """
         return self._execute_query_safely(query_type, params)
 
-    def baseline_retrieval(self, intent: str, entities: Dict) -> Dict[str, Any]:
+    def baseline_retrieval(self, intent: str, entities: Dict, query: str = "") -> Dict[str, Any]:
         """
         Perform baseline retrieval using Cypher queries.
         Routes queries based on intent and entities using centralized query templates.
@@ -156,6 +156,7 @@ class FPLGraphRetriever:
         Args:
             intent: Classified intent
             entities: Extracted entities
+            query: Original query string (needed for database_stats routing)
 
         Returns:
             Retrieved information with method, intent, query_type, cypher_query, and data
@@ -168,6 +169,7 @@ class FPLGraphRetriever:
         
         # Debug output
         print(f"\n🔍 Query Routing: intent='{intent}', entities={entities}")
+        print(f"🔍 Original query: '{query}'")
 
         # Route to appropriate query based on intent using helper method
         if intent == "player_search" and entities.get("players"):
@@ -247,6 +249,52 @@ class FPLGraphRetriever:
             gameweek = int(entities["gameweeks"][0])
             params = {"gameweek": gameweek, "season": season}
             query_type = "best_performers_gameweek"
+            results["data"] = self.execute_query(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
+        
+        elif intent == "fixture" and entities.get("teams"):
+            # Team fixtures query
+            team_name = entities["teams"][0]
+            params = {"team_name": team_name, "season": season}
+            query_type = "team_fixtures"
+            results["data"] = self.execute_query(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
+
+        elif intent == "rule_query":
+            # Special query for players with two positions where one is DEF
+            query_type = "rule_query"
+            params = {}  # No parameters needed for this query
+            results["data"] = self.execute_query(query_type, params)
+            results["query_type"] = query_type
+            results["cypher_query"] = self.query_templates.get(query_type, "N/A")
+
+        elif intent == "database_stats":
+            # Route to specific database statistic queries using original query
+            query_lower = query.lower()
+            
+            if "gameweek" in query_lower or "gameweeks" in query_lower:
+                query_type = "total_gameweeks"
+                params = {}
+            elif "how many player" in query_lower or "player nodes" in query_lower:
+                query_type = "total_players"
+                params = {}
+            elif ("teams" in query_lower and "2021" in query_lower and "2022" in query_lower) or \
+                 ("teams were" in query_lower or "teams only" in query_lower):
+                query_type = "teams_only_in_2021_22"
+                params = {}
+            elif "max" in query_lower or "biggest" in query_lower or "highest" in query_lower:
+                query_type = "max_points_2022_23"
+                params = {}
+            elif "elneny" in query_lower:
+                query_type = "elneny_matches_participated"
+                params = {}
+            else:
+                # Default to total_players if unclear
+                query_type = "total_players"
+                params = {}
+            
             results["data"] = self.execute_query(query_type, params)
             results["query_type"] = query_type
             results["cypher_query"] = self.query_templates.get(query_type, "N/A")
@@ -833,7 +881,7 @@ class FPLGraphRetriever:
         Returns:
             Combined retrieval results
         """
-        baseline_results = self.baseline_retrieval(intent, entities)
+        baseline_results = self.baseline_retrieval(intent, entities, query="")
         embedding_results = self.embedding_retrieval(query_embedding, top_k=5)
 
         return {"baseline": baseline_results, "embedding": embedding_results}

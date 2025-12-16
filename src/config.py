@@ -88,11 +88,7 @@ RETRIEVAL_LIMITS = {
     "teams_only_in_2021_22": 5,
     "max_points_2022_23": 1,
     "elneny_matches_participated": 1,
-    "highest_total_assists": 1,
-    "avg_points_by_position": 10,
-    "away_wins_3plus_goals_2022_23": 20,
-    "most_clean_sheets_2021_22": 1,
-    "goal_and_assist_same_fixture_2022_23": 50
+    "rule_query": 50,
 }
 
 # Similarity thresholds for embedding-based retrieval
@@ -114,7 +110,6 @@ CYPHER_QUERY_TEMPLATES = {
         WITH p, collect(DISTINCT pos.name) AS positions
         RETURN p.player_name AS name, 
             positions AS positions
-        LIMIT 10
     """,
     "top_players_by_position": """
         MATCH (p:Player)-[:PLAYS_AS]->(pos:Position {name: $position})
@@ -126,7 +121,6 @@ CYPHER_QUERY_TEMPLATES = {
                pos.name AS position,
                total_points, goals, assists
         ORDER BY total_points DESC
-        LIMIT 10
     """,
     "player_stats": """
         MATCH (p:Player {player_name: $player_name})
@@ -154,7 +148,6 @@ CYPHER_QUERY_TEMPLATES = {
                positions,
                total_points
         ORDER BY total_points DESC
-        LIMIT 15
     """,
     "player_comparison": """
         MATCH (p:Player)
@@ -193,7 +186,6 @@ CYPHER_QUERY_TEMPLATES = {
         RETURN p.player_name AS name, 
                goals, total_points
         ORDER BY goals DESC
-        LIMIT 10
     """,
     "clean_sheet_leaders": """
         MATCH (p:Player)-[:PLAYS_AS]->(pos:Position)
@@ -206,7 +198,6 @@ CYPHER_QUERY_TEMPLATES = {
                pos.name AS position,
                clean_sheets, total_points
         ORDER BY clean_sheets DESC
-        LIMIT 10
     """,
     "players_by_price": """
         MATCH (p:Player)
@@ -222,14 +213,12 @@ CYPHER_QUERY_TEMPLATES = {
                total_points,
                (toFloat(total_points) / p.now_cost) AS value
         ORDER BY total_points DESC
-        LIMIT 10
     """,
     "form_players": """
         MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
         WHERE f.season = $season
         WITH p, f, r
         ORDER BY f.event DESC
-        LIMIT 5
         WITH p, avg(r.total_points) AS recent_form
         OPTIONAL MATCH (p)-[:PLAYS_AS]->(pos:Position)
         WITH p, recent_form, collect(DISTINCT pos.name) AS positions
@@ -237,7 +226,6 @@ CYPHER_QUERY_TEMPLATES = {
                positions,
                recent_form
         ORDER BY recent_form DESC
-        LIMIT 10
     """,
     "fixtures": """
         MATCH (f:Fixture)
@@ -264,9 +252,8 @@ CYPHER_QUERY_TEMPLATES = {
                r.goals_scored AS goals,
                r.assists AS assists
         ORDER BY r.total_points DESC
-        LIMIT 10
     """,
-    # New queries from queries.txt
+    # New queries from M2 assignments
     "total_gameweeks": """
         MATCH (g:Gameweek)
         RETURN count(g) AS total_gameweeks
@@ -291,8 +278,8 @@ CYPHER_QUERY_TEMPLATES = {
         MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture {season: '2022-23'})
         WITH p, r.total_points AS points
         ORDER BY points DESC
-        LIMIT 1
         RETURN points AS max_points, p.player_name AS player
+        LIMIT 1
     """,
     "elneny_matches_participated": """
         MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
@@ -301,54 +288,47 @@ CYPHER_QUERY_TEMPLATES = {
         WHERE r.minutes > 0
         RETURN count(DISTINCT f) AS matches_participated
     """,
-    "highest_total_assists": """
-        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
-        WITH p.player_name AS player, sum(r.assists) AS total_assists
-        ORDER BY total_assists DESC
-        LIMIT 1
-        RETURN player, total_assists
-    """,
-    "avg_points_by_position": """
-        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture)
-        WITH p.position AS position, avg(r.total_points) AS avg_points_per_gw
-        ORDER BY avg_points_per_gw DESC
-        RETURN position, round(avg_points_per_gw * 100) / 100 AS avg_points
-    """,
-    "away_wins_3plus_goals_2022_23": """
-        MATCH (f:Fixture {season: '2022-23'})
-        WHERE f.team_a_score >= 3 AND f.team_a_score > f.team_h_score
-        MATCH (f)-[:HAS_HOME_TEAM]->(ht:Team)
-        MATCH (f)-[:HAS_AWAY_TEAM]->(at:Team)
-        RETURN f.gameweek AS gameweek,
-               ht.name AS home_team,
-               f.team_h_score AS home_score,
-               at.name AS away_team,
-               f.team_a_score AS away_score
-        ORDER BY f.team_a_score DESC, f.gameweek
-    """,
-    "most_clean_sheets_2021_22": """
-        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture {season: '2021-22'})
-        MATCH (p)-[:PLAYS_FOR]->(t:Team)
-        WHERE r.clean_sheets > 0 AND r.minutes > 0
-        WITH t.name AS team, sum(r.clean_sheets) AS total_clean_sheets
-        ORDER BY total_clean_sheets DESC
-        LIMIT 1
-        RETURN team, total_clean_sheets
-    """,
-    "goal_and_assist_same_fixture_2022_23": """
-        MATCH (p:Player)-[r:PLAYED_IN]->(f:Fixture {season: '2022-23'})
-        WHERE r.goals_scored >= 1 AND r.assists >= 1
-        MATCH (f)-[:HAS_HOME_TEAM]->(ht:Team)
-        MATCH (f)-[:HAS_AWAY_TEAM]->(at:Team)
-        RETURN p.player_name AS player,
-               p.position AS position,
-               r.goals_scored AS goals,
-               r.assists AS assists,
-               r.total_points AS points,
-               f.gameweek AS gameweek,
-               ht.name AS home_team,
-               at.name AS away_team
-        ORDER BY r.total_points DESC
+    "rule_query": """
+        MATCH (p:Player)-[:PLAYS_AS]->(pos:Position)
+        WITH p, collect(pos.name) AS positions
+        WHERE size(positions) = 2 AND 'DEF' IN positions
+        UNWIND positions AS position
+        WITH p, positions, position
+        WHERE position <> 'DEF'
+        MATCH (p)-[r:PLAYED_IN]->(f:Fixture)
+        WITH p, positions, position, f, r,
+          CASE WHEN r.minutes > 0 AND r.minutes < 60 THEN 1 ELSE 0 END +
+          CASE WHEN r.minutes >= 60 THEN 2 ELSE 0 END +
+          (r.assists * 3) +
+          (r.penalties_missed * -2) +
+          (r.own_goals * -2) +
+          (r.yellow_cards * -1) +
+          (r.red_cards * -3) +
+          (r.goals_scored * 6) +
+          CASE WHEN r.minutes >= 60 AND r.clean_sheets > 0 THEN 4 ELSE 0 END +
+          CASE WHEN r.goals_conceded >= 2 THEN toInteger(r.goals_conceded / 2) * -1 ELSE 0 END
+          AS def_score,
+          r.total_points AS actual_points
+        WITH p, positions, position, f, r, def_score, actual_points,
+          CASE WHEN def_score = actual_points THEN true ELSE false END AS matches_def
+        WHERE matches_def = false
+        WITH p, positions, position, 
+          count(f) AS not_def_fixtures,
+          collect({
+            def_score: def_score,
+            season: f.season,
+            fixture_number: f.fixture_number,
+            matches_def: matches_def,
+            total_points: actual_points
+          }) AS fixture_details
+        MATCH (p)-[:PLAYED_IN]->(all_fixtures:Fixture)
+        WITH p, positions, position, not_def_fixtures, fixture_details, count(DISTINCT all_fixtures) AS total_fixtures
+        RETURN 
+          p.player_name AS player,
+          not_def_fixtures,
+          total_fixtures,
+          fixture_details
+        ORDER BY p.player_name
     """,
 }
 
@@ -363,7 +343,9 @@ INTENT_TYPES = {
     "recommendation": ["recommend", "suggest", "best", "top", "should i pick", "transfer"],
     "comparison": ["compare", "vs", "versus", "better", "difference between"],
     "fixture": ["fixture", "next game", "upcoming", "schedule", "playing against"],
-    "price": ["price", "cost", "value", "budget", "cheap", "expensive"]
+    "price": ["price", "cost", "value", "budget", "cheap", "expensive"],
+    "rule_query": ["two positions", "dual position", "multiple positions", "plays as defender"],
+    "database_stats": ["how many", "total", "count", "which teams", "what teams", "teams were", "teams only"]
 }
 
 # Entity types to extract from queries
@@ -446,16 +428,12 @@ EXAMPLE_QUERIES = [
     "Top scorers in gameweek 10",
     "Which defenders have the best value?",
     "Liverpool's upcoming fixtures",
-    "How many total gameweeks are there?",
-    "How many players are in the database?",
-    "Which teams only played in 2021-22?",
-    "Who scored the max points in 2022-23?",
-    "How many matches did Elneny participate in?",
-    "Who has the highest total assists?",
-    "What is the average points by position?",
-    "Show me away wins with 3+ goals in 2022-23",
-    "Which team had the most clean sheets in 2021-22?",
-    "Players with goal and assist in same fixture 2022-23"
+    "How many gameweeks were played during the seasons?",
+    "How many player nodes were created?",
+    "What teams were in 2021-22 but not 2022-23?",
+    "What was the biggest total_point value in 2022-23?",
+    "How many matches did Mohamed Elneny participate in?",
+    "Find players with two positions where one is DEF"
 ]
 
 
