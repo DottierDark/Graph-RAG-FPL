@@ -6,7 +6,7 @@ Handles intent classification, entity extraction, and input embedding
 import re
 from typing import Dict, List, Tuple
 from sentence_transformers import SentenceTransformer
-from config import (
+from .config import (
     INTENT_TYPES, 
     ENTITY_TYPES, 
     POSITION_MAPPINGS, 

@@ -5,9 +5,9 @@ Demonstrates the complete pipeline end-to-end
 
 import os
 from dotenv import load_dotenv
-from input_preprocessing import FPLInputPreprocessor
-from graph_retrieval import FPLGraphRetriever
-from llm_layer import FPLLLMLayer
+from .input_preprocessing import FPLInputPreprocessor
+from .graph_retrieval import FPLGraphRetriever
+from .llm_layer import FPLLLMLayer
 import json
 
 # Load environment variables

@@ -8,7 +8,7 @@ import json
 from typing import Dict, List, Any
 import time
 from huggingface_hub import InferenceClient
-from config import (
+from .config import (
     get_llm_config,
     PROMPT_TEMPLATE,
     DEFAULT_PERSONA,

@@ -13,7 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 from datetime import datetime
-from config import (
+from .config import (
     get_neo4j_config,
     get_embedding_model,
     RETRIEVAL_LIMITS,

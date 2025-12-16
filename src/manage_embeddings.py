@@ -30,10 +30,10 @@ load_dotenv()
 
 # Import optimized retriever
 try:
-    from graph_retrieval_optimized import FPLGraphRetriever
+    from .graph_retrieval_optimized import FPLGraphRetriever
 except ImportError:
     print("⚠️ Using standard graph_retrieval.py")
-    from graph_retrieval import FPLGraphRetriever
+    from .graph_retrieval import FPLGraphRetriever
 
 
 class EmbeddingManager:
