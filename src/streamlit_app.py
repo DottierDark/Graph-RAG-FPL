@@ -93,24 +93,30 @@ class SessionStateManager:
             
             # Build embeddings for all models if not already cached
             for model_name in embedding_models_to_init:
-                temp_retriever = FPLGraphRetriever(
-                    uri=uri,
-                    username=username,
-                    password=password,
-                    embedding_model_name=model_name
-                )
-                
-                if not temp_retriever.is_embeddings_ready():
-                    model_short_name = model_name.split("/")[1]
-                    st.info(f"🔄 Building embeddings for {model_short_name}...")
-                    st.info("⏱️ This is a one-time process that takes 2-3 minutes per model.")
+                temp_retriever = None
+                try:
+                    temp_retriever = FPLGraphRetriever(
+                        uri=uri,
+                        username=username,
+                        password=password,
+                        embedding_model_name=model_name
+                    )
                     
-                    with st.spinner(f"Creating embeddings for {model_short_name}... Please wait"):
-                        try:
-                            player_count = temp_retriever.create_node_embeddings()
-                            st.success(f"✅ Successfully created embeddings for {model_short_name} ({player_count} players)!")
-                        except Exception as build_error:
-                            st.error(f"❌ Failed to build embeddings for {model_short_name}: {str(build_error)}")
+                    if not temp_retriever.is_embeddings_ready():
+                        model_short_name = model_name.split("/")[1]
+                        st.info(f"🔄 Building embeddings for {model_short_name}...")
+                        st.info("⏱️ This is a one-time process that takes 2-3 minutes per model.")
+                        
+                        with st.spinner(f"Creating embeddings for {model_short_name}... Please wait"):
+                            try:
+                                player_count = temp_retriever.create_node_embeddings()
+                                st.success(f"✅ Successfully created embeddings for {model_short_name} ({player_count} players)!")
+                            except Exception as build_error:
+                                st.error(f"❌ Failed to build embeddings for {model_short_name}: {str(build_error)}")
+                finally:
+                    # Always close the temporary retriever connection
+                    if temp_retriever is not None:
+                        temp_retriever.close()
             
             # Initialize retriever with the default selected model
             full_model_name = f"sentence-transformers/{embedding_model}"
