@@ -387,7 +387,7 @@ class FPLLLMLayer:
         # Call appropriate LLM
         if model_name == "gpt-3.5-turbo" and self.openai_key:
             response = self._call_openai(prompt, model_name)
-        elif model_name in ["mistral-7b", "gemma-2b", "llama-2-7b"] and self.hf_client:
+        elif model_name in ["mistral-7b", "gemma-2b", "llama-2-7b", "phi-2"] and self.hf_client:
             response = self._call_huggingface_inference(prompt, model_name)
         else:
             # Fallback to simple rule-based
