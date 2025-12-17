@@ -532,7 +532,15 @@ def main():
                 st.session_state.show_embedding_creator = True
                 st.rerun()
 
+    # Embedding Model Comparison Tool
+    st.sidebar.markdown("---")
+    st.sidebar.header("🔬 Compare Embedding Models")
+    if st.sidebar.button("🆚 Compare Models", use_container_width=True):
+        st.session_state.show_model_comparison = True
+        st.rerun()
+
     # Example questions from centralized config
+    st.sidebar.markdown("---")
     st.sidebar.header("📝 Example Questions")
 
     selected_example = st.sidebar.selectbox(
@@ -548,6 +556,109 @@ def main():
     if st.session_state.messages:
         last_model = st.session_state.messages[-1].get("metadata", {}).get("model", "N/A") if st.session_state.messages[-1]["role"] == "assistant" else "N/A"
         st.sidebar.metric("Last Model Used", last_model)
+
+    # Model Comparison Interface
+    if st.session_state.get('show_model_comparison', False):
+        st.header("🔬 Embedding Model Comparison")
+        st.markdown("Compare how different embedding models perform on the same query.")
+        
+        # Input query for comparison
+        comparison_query = st.text_input("Enter a query to compare models:", placeholder="e.g., Find top scoring forwards")
+        
+        # Model selection
+        col1, col2 = st.columns(2)
+        with col1:
+            models_to_compare = st.multiselect(
+                "Select models to compare:",
+                ["all-MiniLM-L6-v2", "all-mpnet-base-v2"],
+                default=["all-MiniLM-L6-v2", "all-mpnet-base-v2"]
+            )
+        with col2:
+            top_k_compare = st.slider("Top K results per model:", 3, 10, 5)
+        
+        if st.button("🚀 Run Comparison") and comparison_query and models_to_compare:
+            with st.spinner("Comparing models..."):
+                try:
+                    retriever = st.session_state.retriever
+                    
+                    # Run comparison
+                    full_model_names = [f"sentence-transformers/{m}" for m in models_to_compare]
+                    comparison_results = retriever.compare_embedding_models(
+                        query=comparison_query,
+                        models=full_model_names,
+                        top_k=top_k_compare
+                    )
+                    
+                    st.success("✅ Comparison complete!")
+                    
+                    # Display results
+                    st.markdown("---")
+                    st.subheader("📊 Comparison Results")
+                    
+                    # Summary metrics
+                    metric_cols = st.columns(len(models_to_compare))
+                    for idx, (model, result) in enumerate(comparison_results.items()):
+                        with metric_cols[idx]:
+                            st.markdown(f"### {model.split('/')[-1]}")
+                            if "error" not in result:
+                                st.metric("Dimension", f"{result['dimension']}D")
+                                st.metric("Response Time", f"{result['response_time']:.3f}s")
+                                st.metric("Avg Similarity", f"{result['avg_similarity']:.3f}")
+                    
+                    st.markdown("---")
+                    
+                    # Side-by-side results
+                    st.subheader("🔍 Top Results Comparison")
+                    
+                    result_cols = st.columns(len(models_to_compare))
+                    for idx, (model, result) in enumerate(comparison_results.items()):
+                        with result_cols[idx]:
+                            st.markdown(f"#### {model.split('/')[-1]}")
+                            
+                            if "error" in result:
+                                st.error(result["error"])
+                            else:
+                                for i, player in enumerate(result.get("top_results", []), 1):
+                                    with st.container():
+                                        st.markdown(f"**{i}. {player.get('name', 'N/A')}**")
+                                        st.caption(f"Similarity: {player.get('similarity', 0):.3f}")
+                                        st.caption(f"Position: {player.get('primary_position', 'N/A')}")
+                                        st.caption(f"Points: {player.get('total_points', 0)}")
+                                        st.markdown("")
+                    
+                    # Analysis
+                    st.markdown("---")
+                    st.subheader("📈 Analysis")
+                    
+                    if len(comparison_results) == 2:
+                        models_list = list(comparison_results.keys())
+                        model1_name = models_list[0].split('/')[-1]
+                        model2_name = models_list[1].split('/')[-1]
+                        
+                        result1 = comparison_results[models_list[0]]
+                        result2 = comparison_results[models_list[1]]
+                        
+                        if "error" not in result1 and "error" not in result2:
+                            st.markdown(f"""
+                            **Key Differences:**
+                            - **{model1_name}**: {result1['dimension']}D embeddings, faster ({result1['response_time']:.3f}s), avg similarity {result1['avg_similarity']:.3f}
+                            - **{model2_name}**: {result2['dimension']}D embeddings, slower ({result2['response_time']:.3f}s), avg similarity {result2['avg_similarity']:.3f}
+                            
+                            **Recommendation:**
+                            - Use **{model1_name}** for speed and efficiency (smaller model, faster queries)
+                            - Use **{model2_name}** for potentially better quality (larger model, more nuanced understanding)
+                            """)
+                
+                except Exception as e:
+                    st.error(f"Error during comparison: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+        
+        if st.button("← Back to Chat"):
+            st.session_state.show_model_comparison = False
+            st.rerun()
+        
+        st.stop()  # Stop execution here to show only comparison interface
 
     # Main interface
     st.header("💬 Chat with Your FPL Assistant")

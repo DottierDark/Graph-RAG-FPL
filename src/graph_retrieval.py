@@ -873,7 +873,12 @@ class FPLGraphRetriever:
             import time
 
             start = time.time()
-            results = self.embedding_retrieval(query, top_k=top_k)
+            
+            # Encode query with current model
+            query_embedding = self.embedding_model.encode(query, normalize_embeddings=True)
+            
+            # Perform retrieval
+            results = self.embedding_retrieval(query_embedding, top_k=top_k)
             elapsed = time.time() - start
 
             comparison[model] = {
